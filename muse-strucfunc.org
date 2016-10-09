@@ -75,7 +75,48 @@
 *** Cython accelerated version
 
 *** Numba accelerated version
+#+BEGIN_SRC python
+  import numba
 
+  @numba.jit
+  def strucfunc_numba(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
+      """Calculate structure function via naive python algorithm"""
+      ny, nx = vmap.shape
+      if wmap is None:
+          wmap = np.ones_like(vmap)
+      wmin = wmin_factor*np.nanmax(wmap)
+      maxr = np.hypot(nx, ny)
+      nr = int(np.log10(maxr)/dlogr)
+      logr = np.arange(nr)*dlogr
+      sf = np.zeros_like(logr)
+      nsf = np.zeros_like(logr).astype(int)
+      wsf = np.zeros_like(logr)
+      weight = np.zeros_like(logr)
+
+      for j in range(ny):
+          for i in range(nx):
+              for jj in range(ny):
+                  for ii in range(i+1, nx):
+                      r = np.hypot(ii - i, jj - j)
+                      ir = int(np.log10(r)/dlogr)
+                      if 0 <= ir < nr:
+                          dvsq = (vmap[jj, ii] - vmap[j, i])**2
+                          if (wmap[j, i] > wmin) and (wmap[jj, ii] > wmin):
+                              sf[ir] += dvsq
+                              nsf[ir] += 1
+                          w = wmap[j, i]*wmap[jj, ii]
+                          wsf[ir] += w*dvsq
+                          weight[ir] += w
+                  
+      return {'log10 r': logr,
+              'Sum dv^2': sf,
+              'Sum weights': weight,
+              'Sum w * dv^2': wsf,
+              'N pairs': nsf,
+              'Unweighted B(r)': sf/nsf,
+              'Weighted B(r)': wsf/weight}
+
+#+END_SRC
 *** Naive python function
 
 #+BEGIN_SRC python
@@ -107,7 +148,7 @@
                           w = wmap[j, i]*wmap[jj, ii]
                           wsf[ir] += w*dvsq
                           weight[ir] += w
-                    
+                  
       return {'log10 r': logr,
               'Sum dv^2': sf,
               'Sum weights': weight,
@@ -146,52 +187,895 @@ help(strucfunc.strucfunc_python)
 :     Calculate structure function via naive python algorithm
 : 
 
+
+*** A function to test the structure functions
+#+BEGIN_SRC ipython :results silent
+  def test_strucfunc(n=50, func=strucfunc.strucfunc_python):
+      """Set up arrays for stucture function and run it"""
+      ny, nx = n, n
+      vels = np.random.normal(size=(ny, nx))
+      bright = np.ones_like(vels)
+      rslt = func(vmap=vels, wmap=bright)
+      return ['{} :: {}'.format(k, list(v)) for (k, v) in rslt.items()]
+#+END_SRC
+
+
+*** Basic tests with 30 \times 30 arrays
++ These should all be fast.
++ The structure functions should be around 2.0
+
 #+BEGIN_SRC ipython :results list
-  ny, nx = 100, 100
-  vels = np.random.normal(size=(ny, nx))
-  bright = np.ones_like(vels)
-  rslt = strucfunc.strucfunc_python(vmap=vels, wmap=bright)
-  ['{} :: {}'.format(k, list(v)) for (k, v) in rslt.items()]
+  test_strucfunc(n=30)
 #+END_SRC
 
 #+RESULTS:
-- Sum weights :: [9900.0, 19602.0, 48608.0, 105344.0, 225674.0, 420250.0, 879974.0, 1593208.0, 2962560.0, 5185922.0, 8658822.0, 12479820.0, 13074780.0, 3814918.0]
-- N pairs :: [9900, 19602, 48608, 105344, 225674, 420250, 879974, 1593208, 2962560, 5185922, 8658822, 12479820, 13074780, 3814918]
-- Sum dv^2 :: [20169.536270432221, 39014.712802548194, 97354.985371491755, 211139.50852714229, 450334.19402670109, 842657.37237451901, 1759022.1929957219, 3189299.576063246, 5933870.9389122101, 10399039.94695414, 17370155.482146587, 25030096.12904907, 26206928.631232735, 7721107.1101647411]
-- log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999, 1.5, 1.6499999999999999, 1.7999999999999998, 1.95]
-- Weighted B(r) :: [2.0373268960032549, 1.9903434752855931, 2.002859310637997, 2.0042860393296467, 1.9955076527499893, 2.0051335452100392, 1.9989479155017329, 2.0018099181420417, 2.0029538436056011, 2.0052441874278366, 2.0060645064821272, 2.0056456045879725, 2.0043877320484729, 2.0239247895144117]
-- Sum w * dv^2 :: [20169.536270432221, 39014.712802548194, 97354.985371491755, 211139.50852714229, 450334.19402670109, 842657.37237451901, 1759022.1929957219, 3189299.576063246, 5933870.9389122101, 10399039.94695414, 17370155.482146587, 25030096.12904907, 26206928.631232735, 7721107.1101647411]
-- Unweighted B(r) :: [2.0373268960032549, 1.9903434752855931, 2.002859310637997, 2.0042860393296467, 1.9955076527499893, 2.0051335452100392, 1.9989479155017329, 2.0018099181420417, 2.0029538436056011, 2.0052441874278366, 2.0060645064821272, 2.0056456045879725, 2.0043877320484729, 2.0239247895144117]
+- Sum weights :: [870.0, 1682.0, 4088.0, 8534.0, 17424.0, 30000.0, 56074.0, 83308.0, 108730.0, 75258.0]
+- N pairs :: [870, 1682, 4088, 8534, 17424, 30000, 56074, 83308, 108730, 75258]
+- Sum dv^2 :: [1828.5095097223916, 3559.2531802986391, 8389.3460201967555, 17722.109085489486, 35525.990157321634, 62511.829321928126, 116247.03538733888, 169955.0423441093, 220938.51712430117, 144693.77489312604]
+- log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999]
+- Weighted B(r) :: [2.1017350686464273, 2.1160839359682755, 2.0521883611048817, 2.0766474203760823, 2.0389112808380183, 2.0837276440642709, 2.0731004634472106, 2.0400806926598802, 2.0319922479932049, 1.9226364624774248]
+- Sum w * dv^2 :: [1828.5095097223916, 3559.2531802986391, 8389.3460201967555, 17722.109085489486, 35525.990157321634, 62511.829321928126, 116247.03538733888, 169955.0423441093, 220938.51712430117, 144693.77489312604]
+- Unweighted B(r) :: [2.1017350686464273, 2.1160839359682755, 2.0521883611048817, 2.0766474203760823, 2.0389112808380183, 2.0837276440642709, 2.0731004634472106, 2.0400806926598802, 2.0319922479932049, 1.9226364624774248]
 
 
 #+BEGIN_SRC ipython :results list
-  rslt = strucfunc.strucfunc_numpy(vmap=vels, wmap=bright)
-  ['{} :: {}'.format(k, list(v)) for (k, v) in rslt.items()]
+  test_strucfunc(n=30, func=strucfunc.strucfunc_numpy)
 #+END_SRC
 
 #+RESULTS:
-- Sum weights :: [39600.0, 39204.0, 116816.0, 230088.0, 489548.0, 877900.0, 1832348.0, 3255616.0, 6038520.0, 10503244.0, 17478844.0, 25134440.0, 26271760.0, 7640836.0]
-- N pairs :: [39600, 39204, 116816, 230088, 489548, 877900, 1832348, 3255616, 6038520, 10503244, 17478844, 25134440, 26271760, 7640836]
-- Sum dv^2 :: [79739.505162235218, 78029.42560509617, 234190.45159862508, 461670.80884922907, 977241.08205932647, 1760408.4606191032, 3663702.2040768135, 6516615.5384216616, 12094052.637317488, 21059984.585577093, 35061662.833805516, 50411244.429050684, 52659810.634471141, 15464250.245177079]
-- log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999, 1.5, 1.6499999999999999, 1.7999999999999998, 1.95]
-- Weighted B(r) :: [2.0136238677332128, 1.9903434752855875, 2.0047806088089395, 2.0064966832221978, 1.9962109579843579, 2.0052494140780306, 1.9994576380015223, 2.0016536159122151, 2.002817352152098, 2.0050933393127965, 2.0059486104347357, 2.0056641178021346, 2.0044264500920814, 2.0238950613751006]
-- Sum w * dv^2 :: [79739.505162235218, 78029.42560509617, 234190.45159862508, 461670.80884922907, 977241.08205932647, 1760408.4606191032, 3663702.2040768135, 6516615.5384216616, 12094052.637317488, 21059984.585577093, 35061662.833805516, 50411244.429050684, 52659810.634471141, 15464250.245177079]
-- Unweighted B(r) :: [2.0136238677332128, 1.9903434752855875, 2.0047806088089395, 2.0064966832221978, 1.9962109579843579, 2.0052494140780306, 1.9994576380015223, 2.0016536159122151, 2.002817352152098, 2.0050933393127965, 2.0059486104347357, 2.0056641178021346, 2.0044264500920814, 2.0238950613751006]
+- Sum weights :: [3480.0, 3364.0, 9856.0, 18688.0, 37908.0, 62820.0, 117068.0, 170576.0, 222080.0, 152580.0]
+- N pairs :: [3480, 3364, 9856, 18688, 37908, 62820, 117068, 170576, 222080, 152580]
+- Sum dv^2 :: [6522.972382698279, 6332.2367994391516, 18359.872797709158, 35178.274026194413, 70879.648445700484, 119403.97768124907, 223427.11999463933, 329088.41820076539, 413789.71299227088, 280830.15073134273]
+- log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999]
+- Weighted B(r) :: [1.8744173513500801, 1.8823533886561092, 1.8628117692480883, 1.8823990810249578, 1.8697807440566763, 1.9007318955945411, 1.9085242764430872, 1.9292773790027049, 1.8632461860242746, 1.8405436540263647]
+- Sum w * dv^2 :: [6522.972382698279, 6332.2367994391516, 18359.872797709158, 35178.274026194413, 70879.648445700484, 119403.97768124907, 223427.11999463933, 329088.41820076539, 413789.71299227088, 280830.15073134273]
+- Unweighted B(r) :: [1.8744173513500801, 1.8823533886561092, 1.8628117692480883, 1.8823990810249578, 1.8697807440566763, 1.9007318955945411, 1.9085242764430872, 1.9292773790027049, 1.8632461860242746, 1.8405436540263647]
 
 
-Test with N=100
+#+BEGIN_SRC ipython :results list
+  test_strucfunc(n=30, func=strucfunc.strucfunc_numba)
+#+END_SRC
+
+#+RESULTS:
+- Sum weights :: [870.0, 1682.0, 4088.0, 8534.0, 17424.0, 30000.0, 56074.0, 83308.0, 108730.0, 75258.0]
+- N pairs :: [870, 1682, 4088, 8534, 17424, 30000, 56074, 83308, 108730, 75258]
+- Sum dv^2 :: [1847.2837863026311, 3364.3268177113955, 8437.1963333771509, 17488.879340525866, 36193.178707878666, 61894.854626897963, 115356.45719696926, 172336.56452902881, 220812.93073102186, 146937.95646397653]
+- log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999]
+- Weighted B(r) :: [2.123314696899576, 2.0001943030388798, 2.0638934279298313, 2.0493179447534411, 2.0772026347496939, 2.0631618208965987, 2.0572182686622904, 2.068667649313737, 2.0308372181644612, 1.9524563031701152]
+- Sum w * dv^2 :: [1847.2837863026311, 3364.3268177113955, 8437.1963333771509, 17488.879340525866, 36193.178707878666, 61894.854626897963, 115356.45719696926, 172336.56452902881, 220812.93073102186, 146937.95646397653]
+- Unweighted B(r) :: [2.123314696899576, 2.0001943030388798, 2.0638934279298313, 2.0493179447534411, 2.0772026347496939, 2.0631618208965987, 2.0572182686622904, 2.068667649313737, 2.0308372181644612, 1.9524563031701152]
+
+
+#+BEGIN_SRC ipython :results list
+  test_strucfunc(n=200, func=strucfunc.strucfunc_numba)
+#+END_SRC
+
+#+RESULTS:
+- Sum weights :: [39800.0, 79202.0, 197208.0, 430644.0, 931174.0, 1759750.0, 3756974.0, 7014208.0, 13618460.0, 25526822.0, 47669822.0, 84088020.0, 138263880.0, 199521906.0, 210520624.0, 62229760.0]
+- N pairs :: [39800, 79202, 197208, 430644, 931174, 1759750, 3756974, 7014208, 13618460, 25526822, 47669822, 84088020, 138263880, 199521906, 210520624, 62229760]
+- Sum dv^2 :: [79528.907946145919, 161123.92313008237, 398093.31059542822, 868024.86421163136, 1882366.0656988928, 3556077.5329574114, 7584163.2405801686, 14158891.448045129, 27486743.562336277, 51575146.84693604, 96389502.05759567, 170107571.94206303, 279861760.88147771, 403227000.98669356, 423336073.97693521, 124199338.09902725]
+- log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999, 1.5, 1.6499999999999999, 1.7999999999999998, 1.95, 2.1000000000000001, 2.25]
+- Weighted B(r) :: [1.9982137674911036, 2.034341596551632, 2.018646863187235, 2.0156436969088882, 2.021497663915544, 2.0207856416862686, 2.0186893070274556, 2.0186015938000597, 2.0183444796501422, 2.0204296032986808, 2.022023536349594, 2.0229703582277598, 2.0241133178200821, 2.0209660636797122, 2.0109007181022567, 1.9958190116598111]
+- Sum w * dv^2 :: [79528.907946145919, 161123.92313008237, 398093.31059542822, 868024.86421163136, 1882366.0656988928, 3556077.5329574114, 7584163.2405801686, 14158891.448045129, 27486743.562336277, 51575146.84693604, 96389502.05759567, 170107571.94206303, 279861760.88147771, 403227000.98669356, 423336073.97693521, 124199338.09902725]
+- Unweighted B(r) :: [1.9982137674911036, 2.034341596551632, 2.018646863187235, 2.0156436969088882, 2.021497663915544, 2.0207856416862686, 2.0186893070274556, 2.0186015938000597, 2.0183444796501422, 2.0204296032986808, 2.022023536349594, 2.0229703582277598, 2.0241133178200821, 2.0209660636797122, 2.0109007181022567, 1.9958190116598111]
+
+*** Now some timings
+
+**** N=50 - pure python
 #+BEGIN_SRC ipython :results output verbatim
-%timeit strucfunc.strucfunc_numpy(vmap=vels, wmap=bright)
+%timeit test_strucfunc(n=50, func=strucfunc.strucfunc_python)
 #+END_SRC
 
 #+RESULTS:
-: 1 loop, best of 3: 30.1 s per loop
+: 1 loop, best of 3: 14.8 s per loop
 
-Earlier test with N=30.  I don't dare run the pure python one with N=100
+**** N=50 - numpy histogram
 #+BEGIN_SRC ipython :results output verbatim
-%timeit strucfunc.strucfunc_python(vmap=vels, wmap=bright)
+%timeit test_strucfunc(n=50, func=strucfunc.strucfunc_numpy)
 #+END_SRC
 
 #+RESULTS:
-: 1 loop, best of 3: 1.87 s per loop
+: 1 loop, best of 3: 2.47 s per loop
+
+**** N=50 - numba acceleration
+#+BEGIN_SRC ipython :results output verbatim
+%timeit test_strucfunc(n=50, func=strucfunc.strucfunc_numba)
+#+END_SRC
+
+#+RESULTS:
+: 10 loops, best of 3: 85 ms per loop
+
+Wow, that was fast!
+
+
+**** N=100 - numba acceleration
+#+BEGIN_SRC ipython :results output verbatim
+%timeit test_strucfunc(n=100, func=strucfunc.strucfunc_numba)
+#+END_SRC
+
+#+RESULTS:
+: 1 loop, best of 3: 1.33 s per loop
+
+**** N=200 - numba acceleration
+#+BEGIN_SRC ipython :results output verbatim
+%timeit test_strucfunc(n=200, func=strucfunc.strucfunc_numba)
+#+END_SRC
+
+#+RESULTS:
+: 1 loop, best of 3: 21.9 s per loop
+
+**** N=100 - numpy histogram
+#+BEGIN_SRC ipython :results output verbatim
+%timeit test_strucfunc(n=100, func=strucfunc.strucfunc_numpy)
+#+END_SRC
+
+#+RESULTS:
+: 1 loop, best of 3: 30 s per loop
+
+**** Conclusions on timing
++ Numba is the fastest by far
+  + Timings are consistent with N^4 trend
+  + Extrapolation to N=1500 would give t = 18.7 hrs
+  + So we need to further increase the efficiency
+    + [ ] Maybe with nojit and parallelism
+    + [ ] Or vectorize inner loops with Accelerate?
+
+|   N | Python | Numpy | Numba |
+|-----+--------+-------+-------|
+|  50 |   14.8 |  2.47 | 0.085 |
+| 100 |        |    30 |  1.33 |
+| 200 |        |       | 21.29 |
+
+** Check on the numba stuff
+#+BEGIN_SRC ipython :results output verbatim
+strucfunc.strucfunc_numba.inspect_types()
+#+END_SRC
+
+#+RESULTS:
+#+begin_example
+strucfunc_numba (array(float64, 2d, C), omitted(default=0.15), array(float64, 2d, C), omitted(default=0.001))
+--------------------------------------------------------------------------------
+# File: /Users/will/Dropbox/muse-strucfunc/strucfunc.py
+# --- LINE 57 --- 
+
+@numba.jit
+
+# --- LINE 58 --- 
+
+def strucfunc_numba(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
+
+    # --- LINE 59 --- 
+
+    """Calculate structure function via naive python algorithm"""
+
+    # --- LINE 60 --- 
+    # label 0
+    #   vmap = arg(0, name=vmap)  :: pyobject
+    #   dlogr = arg(1, name=dlogr)  :: pyobject
+    #   wmap = arg(2, name=wmap)  :: pyobject
+    #   wmin_factor = arg(3, name=wmin_factor)  :: pyobject
+    #   $0.2 = getattr(attr=shape, value=vmap)  :: pyobject
+    #   $0.5 = exhaust_iter(count=2, value=$0.2)  :: pyobject
+    #   del $0.2
+    #   $0.3 = static_getitem(index_var=None, index=0, value=$0.5)  :: pyobject
+    #   $0.4 = static_getitem(index_var=None, index=1, value=$0.5)  :: pyobject
+    #   del $0.5
+    #   ny = $0.3  :: pyobject
+    #   del $0.3
+    #   nx = $0.4  :: pyobject
+    #   del $0.4
+    #   del $const0.7
+
+    ny, nx = vmap.shape
+
+    # --- LINE 61 --- 
+    #   $const0.7 = const(NoneType, None)  :: pyobject
+    #   $0.8 = wmap is $const0.7  :: pyobject
+    #   branch $0.8, 27, 42
+
+    if wmap is None:
+
+        # --- LINE 62 --- 
+        # label 27
+        #   del $0.8
+        #   $27.1 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: pyobject
+        #   $27.2 = getattr(attr=ones_like, value=$27.1)  :: pyobject
+        #   del $27.1
+        #   $27.4 = call $27.2(vmap)  :: pyobject
+        #   del $27.2
+        #   wmap = $27.4  :: pyobject
+        #   del $27.4
+
+        wmap = np.ones_like(vmap)
+
+    # --- LINE 63 --- 
+    #   jump 42
+    # label 42
+    #   del $0.8
+    #   $42.2 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: pyobject
+    #   $42.3 = getattr(attr=nanmax, value=$42.2)  :: pyobject
+    #   del $42.2
+    #   $42.5 = call $42.3(wmap)  :: pyobject
+    #   del $42.3
+    #   $42.6 = wmin_factor * $42.5  :: pyobject
+    #   del wmin_factor
+    #   del $42.5
+    #   wmin = $42.6  :: pyobject
+    #   del $42.6
+    #   del $42.7
+    #   del $42.8
+    #   del $42.11
+    #   del $42.13
+    #   del maxr
+    #   del $42.14
+    #   del $42.16
+    #   del $42.18
+    #   del $42.12
+    #   del $42.19
+    #   del $42.20
+    #   del $42.21
+    #   del $42.23
+    #   del $42.25
+    #   del $42.26
+    #   del $42.27
+    #   del $42.29
+    #   del $42.30
+    #   del $42.31
+    #   del $42.33
+    #   del $42.35
+    #   del $42.34
+    #   del $42.36
+    #   del $42.37
+    #   del $42.38
+    #   del $42.40
+    #   del $42.41
+    #   del $42.42
+    #   del $42.44
+
+    wmin = wmin_factor*np.nanmax(wmap)
+
+    # --- LINE 64 --- 
+    #   $42.7 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: pyobject
+    #   $42.8 = getattr(attr=hypot, value=$42.7)  :: pyobject
+    #   $42.11 = call $42.8(nx, ny)  :: pyobject
+    #   maxr = $42.11  :: pyobject
+
+    maxr = np.hypot(nx, ny)
+
+    # --- LINE 65 --- 
+    #   $42.12 = global(int: <class 'int'>)  :: pyobject
+    #   $42.13 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: pyobject
+    #   $42.14 = getattr(attr=log10, value=$42.13)  :: pyobject
+    #   $42.16 = call $42.14(maxr)  :: pyobject
+    #   $42.18 = $42.16 / dlogr  :: pyobject
+    #   $42.19 = call $42.12($42.18)  :: pyobject
+    #   nr = $42.19  :: pyobject
+
+    nr = int(np.log10(maxr)/dlogr)
+
+    # --- LINE 66 --- 
+    #   $42.20 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: pyobject
+    #   $42.21 = getattr(attr=arange, value=$42.20)  :: pyobject
+    #   $42.23 = call $42.21(nr)  :: pyobject
+    #   $42.25 = $42.23 * dlogr  :: pyobject
+    #   logr = $42.25  :: pyobject
+
+    logr = np.arange(nr)*dlogr
+
+    # --- LINE 67 --- 
+    #   $42.26 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: pyobject
+    #   $42.27 = getattr(attr=zeros_like, value=$42.26)  :: pyobject
+    #   $42.29 = call $42.27(logr)  :: pyobject
+    #   sf = $42.29  :: pyobject
+
+    sf = np.zeros_like(logr)
+
+    # --- LINE 68 --- 
+    #   $42.30 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: pyobject
+    #   $42.31 = getattr(attr=zeros_like, value=$42.30)  :: pyobject
+    #   $42.33 = call $42.31(logr)  :: pyobject
+    #   $42.34 = getattr(attr=astype, value=$42.33)  :: pyobject
+    #   $42.35 = global(int: <class 'int'>)  :: pyobject
+    #   $42.36 = call $42.34($42.35)  :: pyobject
+    #   nsf = $42.36  :: pyobject
+
+    nsf = np.zeros_like(logr).astype(int)
+
+    # --- LINE 69 --- 
+    #   $42.37 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: pyobject
+    #   $42.38 = getattr(attr=zeros_like, value=$42.37)  :: pyobject
+    #   $42.40 = call $42.38(logr)  :: pyobject
+    #   wsf = $42.40  :: pyobject
+
+    wsf = np.zeros_like(logr)
+
+    # --- LINE 70 --- 
+    #   $42.41 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: pyobject
+    #   $42.42 = getattr(attr=zeros_like, value=$42.41)  :: pyobject
+    #   $42.44 = call $42.42(logr)  :: pyobject
+    #   weight = $42.44  :: pyobject
+
+    weight = np.zeros_like(logr)
+
+# --- LINE 71 --- 
+
+
+
+    # --- LINE 72 --- 
+    #   jump 192
+    # label 192
+    #   jump 195
+    # label 195
+    #   $233 = const(LiftedLoop, LiftedLoop(<function strucfunc_numba at 0x1053879d8>))  :: XXX Lifted Loop XXX
+    #   $234 = call $233(dlogr, logr, nr, nsf, nx, ny, sf, vmap, weight, wmap, wmin, wsf)  :: XXX Lifted Loop XXX
+    #   del wmin
+    #   del wmap
+    #   del vmap
+    #   del ny
+    #   del nx
+    #   del nr
+    #   del dlogr
+    #   del $233
+    #   logr = static_getitem(index_var=None, index=0, value=$234)  :: pyobject
+    #   nsf = static_getitem(index_var=None, index=1, value=$234)  :: pyobject
+    #   sf = static_getitem(index_var=None, index=2, value=$234)  :: pyobject
+    #   weight = static_getitem(index_var=None, index=3, value=$234)  :: pyobject
+    #   wsf = static_getitem(index_var=None, index=4, value=$234)  :: pyobject
+    #   del $234
+    #   jump 538
+
+    for j in range(ny):
+
+        # --- LINE 73 --- 
+
+        for i in range(nx):
+
+            # --- LINE 74 --- 
+
+            for jj in range(ny):
+
+                # --- LINE 75 --- 
+
+                for ii in range(i+1, nx):
+
+                    # --- LINE 76 --- 
+
+                    r = np.hypot(ii - i, jj - j)
+
+                    # --- LINE 77 --- 
+
+                    ir = int(np.log10(r)/dlogr)
+
+                    # --- LINE 78 --- 
+
+                    if 0 <= ir < nr:
+
+                        # --- LINE 79 --- 
+
+                        dvsq = (vmap[jj, ii] - vmap[j, i])**2
+
+                        # --- LINE 80 --- 
+
+                        if (wmap[j, i] > wmin) and (wmap[jj, ii] > wmin):
+
+                            # --- LINE 81 --- 
+
+                            sf[ir] += dvsq
+
+                            # --- LINE 82 --- 
+
+                            nsf[ir] += 1
+
+                        # --- LINE 83 --- 
+
+                        w = wmap[j, i]*wmap[jj, ii]
+
+                        # --- LINE 84 --- 
+
+                        wsf[ir] += w*dvsq
+
+                        # --- LINE 85 --- 
+
+                        weight[ir] += w
+
+# --- LINE 86 --- 
+
+
+
+    # --- LINE 87 --- 
+    # label 538
+    #   $const538.1 = const(str, log10 r)  :: pyobject
+    #   del wsf
+    #   del weight
+    #   del sf
+    #   del nsf
+    #   del logr
+    #   del $const538.9
+    #   del $const538.7
+    #   del $const538.5
+    #   del $const538.3
+    #   del $const538.15
+    #   del $const538.11
+    #   del $const538.1
+    #   del $538.18
+    #   del $538.14
+    #   del $538.19
+
+    return {'log10 r': logr,
+
+            # --- LINE 88 --- 
+            #   $const538.3 = const(str, Sum dv^2)  :: pyobject
+
+            'Sum dv^2': sf,
+
+            # --- LINE 89 --- 
+            #   $const538.5 = const(str, Sum weights)  :: pyobject
+
+            'Sum weights': weight,
+
+            # --- LINE 90 --- 
+            #   $const538.7 = const(str, Sum w * dv^2)  :: pyobject
+
+            'Sum w * dv^2': wsf,
+
+            # --- LINE 91 --- 
+            #   $const538.9 = const(str, N pairs)  :: pyobject
+
+            'N pairs': nsf,
+
+            # --- LINE 92 --- 
+            #   $const538.11 = const(str, Unweighted B(r))  :: pyobject
+            #   $538.14 = sf / nsf  :: pyobject
+
+            'Unweighted B(r)': sf/nsf,
+
+            # --- LINE 93 --- 
+            #   $const538.15 = const(str, Weighted B(r))  :: pyobject
+            #   $538.18 = wsf / weight  :: pyobject
+            #   $538.19 = build_map(size=7, items=[(Var($const538.1, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (87)), Var(logr, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (66))), (Var($const538.3, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (88)), Var(sf, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (67))), (Var($const538.5, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (89)), Var(weight, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (70))), (Var($const538.7, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (90)), Var(wsf, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (69))), (Var($const538.9, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (91)), Var(nsf, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (68))), (Var($const538.11, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (92)), Var($538.14, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (92))), (Var($const538.15, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (93)), Var($538.18, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (93)))])  :: pyobject
+            #   $538.20 = cast(value=$538.19)  :: pyobject
+            #   return $538.20
+
+            'Weighted B(r)': wsf/weight}
+
+# The function contains lifted loops
+# Loop at line 72
+# Has 1 overloads
+# File: /Users/will/Dropbox/muse-strucfunc/strucfunc.py
+# --- LINE 57 --- 
+
+@numba.jit
+
+# --- LINE 58 --- 
+
+def strucfunc_numba(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
+
+    # --- LINE 59 --- 
+
+    """Calculate structure function via naive python algorithm"""
+
+    # --- LINE 60 --- 
+
+    ny, nx = vmap.shape
+
+    # --- LINE 61 --- 
+
+    if wmap is None:
+
+        # --- LINE 62 --- 
+
+        wmap = np.ones_like(vmap)
+
+    # --- LINE 63 --- 
+
+    wmin = wmin_factor*np.nanmax(wmap)
+
+    # --- LINE 64 --- 
+
+    maxr = np.hypot(nx, ny)
+
+    # --- LINE 65 --- 
+
+    nr = int(np.log10(maxr)/dlogr)
+
+    # --- LINE 66 --- 
+
+    logr = np.arange(nr)*dlogr
+
+    # --- LINE 67 --- 
+
+    sf = np.zeros_like(logr)
+
+    # --- LINE 68 --- 
+
+    nsf = np.zeros_like(logr).astype(int)
+
+    # --- LINE 69 --- 
+
+    wsf = np.zeros_like(logr)
+
+    # --- LINE 70 --- 
+
+    weight = np.zeros_like(logr)
+
+# --- LINE 71 --- 
+
+
+
+    # --- LINE 72 --- 
+    # label 194
+    #   dlogr = arg(0, name=dlogr)  :: float64
+    #   logr = arg(1, name=logr)  :: array(float64, 1d, C)
+    #   nr = arg(2, name=nr)  :: int64
+    #   nsf = arg(3, name=nsf)  :: array(int64, 1d, C)
+    #   nx = arg(4, name=nx)  :: int64
+    #   ny = arg(5, name=ny)  :: int64
+    #   sf = arg(6, name=sf)  :: array(float64, 1d, C)
+    #   vmap = arg(7, name=vmap)  :: array(float64, 2d, C)
+    #   weight = arg(8, name=weight)  :: array(float64, 1d, C)
+    #   wmap = arg(9, name=wmap)  :: array(float64, 2d, C)
+    #   wmin = arg(10, name=wmin)  :: float64
+    #   wsf = arg(11, name=wsf)  :: array(float64, 1d, C)
+    #   jump 195
+    # label 195
+    #   $195.1 = global(range: <class 'range'>)  :: Function(<class 'range'>)
+    #   $195.3 = call $195.1(ny)  :: (int64,) -> range_state_int64
+    #   del $195.1
+    #   $195.4 = getiter(value=$195.3)  :: range_iter_int64
+    #   del $195.3
+    #   $phi205.1 = $195.4  :: range_iter_int64
+    #   del $195.4
+    #   jump 205
+    # label 205
+    #   $205.2 = iternext(value=$phi205.1)  :: pair<int64, bool>
+    #   $205.3 = pair_first(value=$205.2)  :: int64
+    #   $205.4 = pair_second(value=$205.2)  :: bool
+    #   del $205.2
+    #   $phi208.1 = $205.3  :: int64
+    #   del $205.3
+    #   branch $205.4, 208, 537
+    # label 208
+    #   del $205.4
+    #   j = $phi208.1  :: int64
+    #   del $phi208.1
+    # label 538
+    #   $232 = build_tuple(items=[Var(logr, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (66)), Var(nsf, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (68)), Var(sf, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (67)), Var(weight, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (70)), Var(wsf, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (69))])  :: (array(float64, 1d, C), array(int64, 1d, C), array(float64, 1d, C), array(float64, 1d, C), array(float64, 1d, C))
+    #   del wsf
+    #   del weight
+    #   del sf
+    #   del nsf
+    #   del logr
+    #   return $232
+
+    for j in range(ny):
+
+        # --- LINE 73 --- 
+        #   jump 211
+        # label 211
+        #   jump 214
+        # label 214
+        #   $214.1 = global(range: <class 'range'>)  :: Function(<class 'range'>)
+        #   $214.3 = call $214.1(nx)  :: (int64,) -> range_state_int64
+        #   del $214.1
+        #   $214.4 = getiter(value=$214.3)  :: range_iter_int64
+        #   del $214.3
+        #   $phi224.1 = $214.4  :: range_iter_int64
+        #   del $214.4
+        #   jump 224
+        # label 224
+        #   $224.2 = iternext(value=$phi224.1)  :: pair<int64, bool>
+        #   $224.3 = pair_first(value=$224.2)  :: int64
+        #   $224.4 = pair_second(value=$224.2)  :: bool
+        #   del $224.2
+        #   $phi227.1 = $224.3  :: int64
+        #   del $224.3
+        #   branch $224.4, 227, 533
+        # label 227
+        #   del $224.4
+        #   i = $phi227.1  :: int64
+        #   del $phi227.1
+
+        for i in range(nx):
+
+            # --- LINE 74 --- 
+            #   jump 230
+            # label 230
+            #   jump 233
+            # label 233
+            #   $233.1 = global(range: <class 'range'>)  :: Function(<class 'range'>)
+            #   $233.3 = call $233.1(ny)  :: (int64,) -> range_state_int64
+            #   del $233.1
+            #   $233.4 = getiter(value=$233.3)  :: range_iter_int64
+            #   del $233.3
+            #   $phi243.1 = $233.4  :: range_iter_int64
+            #   del $233.4
+            #   jump 243
+            # label 243
+            #   $243.2 = iternext(value=$phi243.1)  :: pair<int64, bool>
+            #   $243.3 = pair_first(value=$243.2)  :: int64
+            #   $243.4 = pair_second(value=$243.2)  :: bool
+            #   del $243.2
+            #   $phi246.1 = $243.3  :: int64
+            #   del $243.3
+            #   branch $243.4, 246, 529
+            # label 246
+            #   del $243.4
+            #   jj = $phi246.1  :: int64
+            #   del $phi246.1
+
+            for jj in range(ny):
+
+                # --- LINE 75 --- 
+                #   jump 249
+                # label 249
+                #   jump 252
+                # label 252
+                #   $252.1 = global(range: <class 'range'>)  :: Function(<class 'range'>)
+                #   $const252.3 = const(int, 1)  :: int64
+                #   $252.4 = i + $const252.3  :: int64
+                #   del $const252.3
+                #   $252.6 = call $252.1($252.4, nx)  :: (int64, int64) -> range_state_int64
+                #   del $252.4
+                #   del $252.1
+                #   $252.7 = getiter(value=$252.6)  :: range_iter_int64
+                #   del $252.6
+                #   $phi269.1 = $252.7  :: range_iter_int64
+                #   del $252.7
+                #   jump 269
+                # label 269
+                #   del ir
+                #   del ii
+                #   del $phi351.1
+                #   $269.2 = iternext(value=$phi269.1)  :: pair<int64, bool>
+                #   $269.3 = pair_first(value=$269.2)  :: int64
+                #   $269.4 = pair_second(value=$269.2)  :: bool
+                #   del $269.2
+                #   $phi272.1 = $269.3  :: int64
+                #   del $269.3
+                #   branch $269.4, 272, 525
+                # label 272
+                #   del $269.4
+                #   ii = $phi272.1  :: int64
+                #   del $phi272.1
+                #   del $272.2
+                #   del $272.9
+                #   del $272.6
+                #   del $272.3
+                #   del $272.10
+                #   del $272.12
+                #   del r
+                #   del $272.13
+                #   del $272.15
+                #   del $272.17
+                #   del $272.11
+                #   del $272.18
+                #   del $const272.19
+                #   del $phi349.2
+
+                for ii in range(i+1, nx):
+
+                    # --- LINE 76 --- 
+                    #   $272.2 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: Module(<module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)
+                    #   $272.3 = getattr(attr=hypot, value=$272.2)  :: Function(<ufunc 'hypot'>)
+                    #   $272.6 = ii - i  :: int64
+                    #   $272.9 = jj - j  :: int64
+                    #   $272.10 = call $272.3($272.6, $272.9)  :: (int64, int64) -> float64
+                    #   r = $272.10  :: float64
+
+                    r = np.hypot(ii - i, jj - j)
+
+                    # --- LINE 77 --- 
+                    #   $272.11 = global(int: <class 'int'>)  :: Function(<class 'int'>)
+                    #   $272.12 = global(np: <module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)  :: Module(<module 'numpy' from '/Users/will/anaconda/lib/python3.5/site-packages/numpy/__init__.py'>)
+                    #   $272.13 = getattr(attr=log10, value=$272.12)  :: Function(<ufunc 'log10'>)
+                    #   $272.15 = call $272.13(r)  :: (float64,) -> float64
+                    #   $272.17 = $272.15 / dlogr  :: float64
+                    #   $272.18 = call $272.11($272.17)  :: (float64,) -> int64
+                    #   ir = $272.18  :: int64
+
+                    ir = int(np.log10(r)/dlogr)
+
+                    # --- LINE 78 --- 
+                    #   $const272.19 = const(int, 0)  :: int64
+                    #   $272.22 = $const272.19 <= ir  :: bool
+                    #   $phi349.2 = ir  :: int64
+                    #   $phi349.1 = $272.22  :: bool
+                    #   $phi340.2 = ir  :: int64
+                    #   branch $272.22, 340, 349
+                    # label 340
+                    #   del $phi349.1
+                    #   del $272.22
+                    #   $340.3 = $phi340.2 < nr  :: bool
+                    #   del $phi340.2
+                    #   $phi351.1 = $340.3  :: bool
+                    #   del $340.3
+                    #   jump 351
+                    # label 349
+                    #   del $phi340.2
+                    #   del $272.22
+                    #   $phi351.1 = $phi349.1  :: bool
+                    #   del $phi349.1
+                    #   jump 351
+                    # label 351
+                    #   branch $phi351.1, 354, 269
+
+                    if 0 <= ir < nr:
+
+                        # --- LINE 79 --- 
+                        # label 354
+                        #   del $phi351.1
+                        #   $354.4 = build_tuple(items=[Var(jj, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (74)), Var(ii, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (75))])  :: (int64 x 2)
+                        #   $354.5 = getitem(index=$354.4, value=vmap)  :: float64
+                        #   del $354.4
+                        #   $354.9 = build_tuple(items=[Var(j, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (72)), Var(i, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (73))])  :: (int64 x 2)
+                        #   $354.10 = getitem(index=$354.9, value=vmap)  :: float64
+                        #   del $354.9
+                        #   $354.11 = $354.5 - $354.10  :: float64
+                        #   del $354.5
+                        #   del $354.10
+                        #   $const354.12 = const(int, 2)  :: int64
+                        #   $354.13 = $354.11 ** $const354.12  :: float64
+                        #   del $const354.12
+                        #   del $354.11
+                        #   dvsq = $354.13  :: float64
+                        #   del $354.13
+                        #   del $354.17
+                        #   del $354.18
+
+                        dvsq = (vmap[jj, ii] - vmap[j, i])**2
+
+                        # --- LINE 80 --- 
+                        #   $354.17 = build_tuple(items=[Var(j, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (72)), Var(i, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (73))])  :: (int64 x 2)
+                        #   $354.18 = getitem(index=$354.17, value=wmap)  :: float64
+                        #   $354.20 = $354.18 > wmin  :: bool
+                        #   branch $354.20, 410, 460
+                        # label 410
+                        #   del $354.20
+                        #   $410.4 = build_tuple(items=[Var(jj, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (74)), Var(ii, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (75))])  :: (int64 x 2)
+                        #   $410.5 = getitem(index=$410.4, value=wmap)  :: float64
+                        #   del $410.4
+                        #   $410.7 = $410.5 > wmin  :: bool
+                        #   del $410.5
+                        #   branch $410.7, 432, 460
+
+                        if (wmap[j, i] > wmin) and (wmap[jj, ii] > wmin):
+
+                            # --- LINE 81 --- 
+                            # label 432
+                            #   del $410.7
+                            #   $432.5 = getitem(index=ir, value=sf)  :: float64
+                            #   $432.7 = inplace_binop(fn=+=, static_lhs=<object object at 0x10072e2e0>, immutable_fn=+, static_rhs=<object object at 0x10072e2e0>, lhs=$432.5, rhs=dvsq)  :: float64
+                            #   del $432.5
+                            #   sf[ir] = $432.7  :: (array(float64, 1d, C), int64, float64) -> none
+                            #   del $432.7
+                            #   del $const432.13
+                            #   del $432.12
+                            #   del $432.14
+
+                            sf[ir] += dvsq
+
+                            # --- LINE 82 --- 
+                            #   $432.12 = getitem(index=ir, value=nsf)  :: int64
+                            #   $const432.13 = const(int, 1)  :: int64
+                            #   $432.14 = inplace_binop(fn=+=, static_lhs=<object object at 0x10072e2e0>, immutable_fn=+, static_rhs=<object object at 0x10072e2e0>, lhs=$432.12, rhs=$const432.13)  :: int64
+                            #   nsf[ir] = $432.14  :: (array(int64, 1d, C), int64, int64) -> none
+
+                            nsf[ir] += 1
+
+                        # --- LINE 83 --- 
+                        #   jump 460
+                        # label 460
+                        #   del $410.7
+                        #   del $354.20
+                        #   $460.4 = build_tuple(items=[Var(j, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (72)), Var(i, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (73))])  :: (int64 x 2)
+                        #   $460.5 = getitem(index=$460.4, value=wmap)  :: float64
+                        #   del $460.4
+                        #   $460.9 = build_tuple(items=[Var(jj, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (74)), Var(ii, /Users/will/Dropbox/muse-strucfunc/strucfunc.py (75))])  :: (int64 x 2)
+                        #   del ii
+                        #   $460.10 = getitem(index=$460.9, value=wmap)  :: float64
+                        #   del $460.9
+                        #   $460.11 = $460.5 * $460.10  :: float64
+                        #   del $460.5
+                        #   del $460.10
+                        #   w = $460.11  :: float64
+                        #   del $460.11
+                        #   del dvsq
+                        #   del $460.19
+                        #   del $460.16
+                        #   del $460.20
+                        #   del w
+                        #   del $460.25
+                        #   del ir
+                        #   del $460.27
+
+                        w = wmap[j, i]*wmap[jj, ii]
+
+                        # --- LINE 84 --- 
+                        #   $460.16 = getitem(index=ir, value=wsf)  :: float64
+                        #   $460.19 = w * dvsq  :: float64
+                        #   $460.20 = inplace_binop(fn=+=, static_lhs=<object object at 0x10072e2e0>, immutable_fn=+, static_rhs=<object object at 0x10072e2e0>, lhs=$460.16, rhs=$460.19)  :: float64
+                        #   wsf[ir] = $460.20  :: (array(float64, 1d, C), int64, float64) -> none
+
+                        wsf[ir] += w*dvsq
+
+                        # --- LINE 85 --- 
+                        #   $460.25 = getitem(index=ir, value=weight)  :: float64
+                        #   $460.27 = inplace_binop(fn=+=, static_lhs=<object object at 0x10072e2e0>, immutable_fn=+, static_rhs=<object object at 0x10072e2e0>, lhs=$460.25, rhs=w)  :: float64
+                        #   weight[ir] = $460.27  :: (array(float64, 1d, C), int64, float64) -> none
+                        #   jump 269
+                        # label 525
+                        #   del jj
+                        #   del $phi272.1
+                        #   del $phi269.1
+                        #   del $269.4
+                        #   jump 526
+                        # label 526
+                        #   jump 243
+                        # label 529
+                        #   del i
+                        #   del $phi246.1
+                        #   del $phi243.1
+                        #   del $243.4
+                        #   jump 530
+                        # label 530
+                        #   jump 224
+                        # label 533
+                        #   del j
+                        #   del $phi227.1
+                        #   del $phi224.1
+                        #   del $224.4
+                        #   jump 534
+                        # label 534
+                        #   jump 205
+                        # label 537
+                        #   del wmin
+                        #   del wmap
+                        #   del vmap
+                        #   del ny
+                        #   del nx
+                        #   del nr
+                        #   del dlogr
+                        #   del $phi208.1
+                        #   del $phi205.1
+                        #   del $205.4
+
+                        weight[ir] += w
+
+# --- LINE 86 --- 
+
+
+
+    # --- LINE 87 --- 
+    #   jump 538
+
+    return {'log10 r': logr,
+
+            # --- LINE 88 --- 
+
+            'Sum dv^2': sf,
+
+            # --- LINE 89 --- 
+
+            'Sum weights': weight,
+
+            # --- LINE 90 --- 
+
+            'Sum w * dv^2': wsf,
+
+            # --- LINE 91 --- 
+
+            'N pairs': nsf,
+
+            # --- LINE 92 --- 
+
+            'Unweighted B(r)': sf/nsf,
+
+            # --- LINE 93 --- 
+
+            'Weighted B(r)': wsf/weight}
+
+
+
+================================================================================
+#+end_example
 
