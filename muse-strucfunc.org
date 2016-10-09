@@ -1,0 +1,197 @@
+* Structure function of MUSE velocity maps
++ [2016-10-07 Fri] This will be a re-implementation of my old =strucfunc3.f90=, targeted towards calculating the 2D second-order structure function on the plane of hte sky of the mean velocity from the MUSE orion cubes
++ I will try implementations in
+  1. python/numpy
+  2. cython
+  3. julia
++ And see which is most efficient
+  + Trying parallel algorithms too
+
+** Different implementations of the structure function
+:PROPERTIES:
+:header-args: :tangle strucfunc.py
+:END:
+
+*** Imports 
+#+BEGIN_SRC python
+  import numpy as np
+#+END_SRC
+
+
+*** Numpy histogram version
+#+BEGIN_SRC python
+  def strucfunc_numpy(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
+      """Calculate structure function by numpy.histogram"""
+      ny, nx = vmap.shape
+      if wmap is None:
+          wmap = np.ones_like(vmap)
+      wmin = wmin_factor*np.nanmax(wmap)
+      maxr = np.hypot(nx, ny)
+      nr = int(np.log10(maxr)/dlogr)
+      logr = np.arange(nr)*dlogr
+      sf = np.zeros_like(logr)
+      nsf = np.zeros_like(logr).astype(int)
+      wsf = np.zeros_like(logr)
+      weight = np.zeros_like(logr)
+
+      # histogram requires an array that is longer by one
+      edges = np.arange(nr+1)*dlogr
+
+      # 2D arrays of x and y coordinates
+      ii = np.arange(nx)[None, :]
+      jj = np.arange(ny)[:, None]
+      for j in range(ny):
+          for i in range(nx):
+              # everything is a 2D array over the map
+              r = np.hypot(ii - i, jj - j)
+              dvsq = (vmap - vmap[j, i])**2
+              w = wmap[j, i]*wmap
+              rmask = (r >= 1.0) & (r <= maxr)
+              wmask = wmap > wmin
+              if wmap[j, i] > wmin:
+                  mask = wmask & rmask
+                  # Histogram weighted by dvsq gives sum of dv^2
+                  hist, _ = np.histogram(np.log10(r[mask]), bins=edges,
+                                         weights=dvsq[mask])
+                  sf += hist
+                  # Unweighted histogram gives number of points in each bin
+                  hist, _ = np.histogram(np.log10(r[mask]), bins=edges)
+                  nsf += hist
+              hist, _ = np.histogram(np.log10(r[rmask]), bins=edges,
+                                     weights=dvsq[rmask]*w[rmask])
+              wsf += hist
+              hist, _ = np.histogram(np.log10(r[rmask]), bins=edges,
+                                     weights=w[rmask])
+              weight += hist
+                  
+      return {'log10 r': logr,
+              'Sum dv^2': sf,
+              'Sum weights': weight,
+              'Sum w * dv^2': wsf,
+              'N pairs': nsf,
+              'Unweighted B(r)': sf/nsf,
+              'Weighted B(r)': wsf/weight}
+#+END_SRC
+*** Cython accelerated version
+
+*** Numba accelerated version
+
+*** Naive python function
+
+#+BEGIN_SRC python
+  def strucfunc_python(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
+      """Calculate structure function via naive python algorithm"""
+      ny, nx = vmap.shape
+      if wmap is None:
+          wmap = np.ones_like(vmap)
+      wmin = wmin_factor*np.nanmax(wmap)
+      maxr = np.hypot(nx, ny)
+      nr = int(np.log10(maxr)/dlogr)
+      logr = np.arange(nr)*dlogr
+      sf = np.zeros_like(logr)
+      nsf = np.zeros_like(logr).astype(int)
+      wsf = np.zeros_like(logr)
+      weight = np.zeros_like(logr)
+
+      for j in range(ny):
+          for i in range(nx):
+              for jj in range(ny):
+                  for ii in range(i+1, nx):
+                      r = np.hypot(ii - i, jj - j)
+                      ir = int(np.log10(r)/dlogr)
+                      if 0 <= ir < nr:
+                          dvsq = (vmap[jj, ii] - vmap[j, i])**2
+                          if (wmap[j, i] > wmin) and (wmap[jj, ii] > wmin):
+                              sf[ir] += dvsq
+                              nsf[ir] += 1
+                          w = wmap[j, i]*wmap[jj, ii]
+                          wsf[ir] += w*dvsq
+                          weight[ir] += w
+                    
+      return {'log10 r': logr,
+              'Sum dv^2': sf,
+              'Sum weights': weight,
+              'Sum w * dv^2': wsf,
+              'N pairs': nsf,
+              'Unweighted B(r)': sf/nsf,
+              'Weighted B(r)': wsf/weight}
+#+END_SRC
+
+
+** Testing and timing the structure function routines
+:PROPERTIES:
+:header-args:ipython: :session ipysf :exports both 
+:END:
+
+#+BEGIN_SRC ipython
+  import numpy as np
+  import strucfunc
+#+END_SRC
+
+#+BEGIN_SRC ipython
+from importlib import reload
+reload(strucfunc)
+#+END_SRC
+
+#+RESULTS:
+: <module 'strucfunc' from '/Users/will/Dropbox/muse-strucfunc/strucfunc.py'>
+
+#+BEGIN_SRC ipython :results output
+help(strucfunc.strucfunc_python)
+#+END_SRC
+#+RESULTS:
+: Help on function strucfunc_python in module strucfunc:
+: 
+: strucfunc_python(vmap, dlogr=0.15, wmap=None, wmin_factor=0.001)
+:     Calculate structure function via naive python algorithm
+: 
+
+#+BEGIN_SRC ipython :results list
+  ny, nx = 100, 100
+  vels = np.random.normal(size=(ny, nx))
+  bright = np.ones_like(vels)
+  rslt = strucfunc.strucfunc_python(vmap=vels, wmap=bright)
+  ['{} :: {}'.format(k, list(v)) for (k, v) in rslt.items()]
+#+END_SRC
+
+#+RESULTS:
+- Sum weights :: [9900.0, 19602.0, 48608.0, 105344.0, 225674.0, 420250.0, 879974.0, 1593208.0, 2962560.0, 5185922.0, 8658822.0, 12479820.0, 13074780.0, 3814918.0]
+- N pairs :: [9900, 19602, 48608, 105344, 225674, 420250, 879974, 1593208, 2962560, 5185922, 8658822, 12479820, 13074780, 3814918]
+- Sum dv^2 :: [20169.536270432221, 39014.712802548194, 97354.985371491755, 211139.50852714229, 450334.19402670109, 842657.37237451901, 1759022.1929957219, 3189299.576063246, 5933870.9389122101, 10399039.94695414, 17370155.482146587, 25030096.12904907, 26206928.631232735, 7721107.1101647411]
+- log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999, 1.5, 1.6499999999999999, 1.7999999999999998, 1.95]
+- Weighted B(r) :: [2.0373268960032549, 1.9903434752855931, 2.002859310637997, 2.0042860393296467, 1.9955076527499893, 2.0051335452100392, 1.9989479155017329, 2.0018099181420417, 2.0029538436056011, 2.0052441874278366, 2.0060645064821272, 2.0056456045879725, 2.0043877320484729, 2.0239247895144117]
+- Sum w * dv^2 :: [20169.536270432221, 39014.712802548194, 97354.985371491755, 211139.50852714229, 450334.19402670109, 842657.37237451901, 1759022.1929957219, 3189299.576063246, 5933870.9389122101, 10399039.94695414, 17370155.482146587, 25030096.12904907, 26206928.631232735, 7721107.1101647411]
+- Unweighted B(r) :: [2.0373268960032549, 1.9903434752855931, 2.002859310637997, 2.0042860393296467, 1.9955076527499893, 2.0051335452100392, 1.9989479155017329, 2.0018099181420417, 2.0029538436056011, 2.0052441874278366, 2.0060645064821272, 2.0056456045879725, 2.0043877320484729, 2.0239247895144117]
+
+
+#+BEGIN_SRC ipython :results list
+  rslt = strucfunc.strucfunc_numpy(vmap=vels, wmap=bright)
+  ['{} :: {}'.format(k, list(v)) for (k, v) in rslt.items()]
+#+END_SRC
+
+#+RESULTS:
+- Sum weights :: [39600.0, 39204.0, 116816.0, 230088.0, 489548.0, 877900.0, 1832348.0, 3255616.0, 6038520.0, 10503244.0, 17478844.0, 25134440.0, 26271760.0, 7640836.0]
+- N pairs :: [39600, 39204, 116816, 230088, 489548, 877900, 1832348, 3255616, 6038520, 10503244, 17478844, 25134440, 26271760, 7640836]
+- Sum dv^2 :: [79739.505162235218, 78029.42560509617, 234190.45159862508, 461670.80884922907, 977241.08205932647, 1760408.4606191032, 3663702.2040768135, 6516615.5384216616, 12094052.637317488, 21059984.585577093, 35061662.833805516, 50411244.429050684, 52659810.634471141, 15464250.245177079]
+- log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999, 1.5, 1.6499999999999999, 1.7999999999999998, 1.95]
+- Weighted B(r) :: [2.0136238677332128, 1.9903434752855875, 2.0047806088089395, 2.0064966832221978, 1.9962109579843579, 2.0052494140780306, 1.9994576380015223, 2.0016536159122151, 2.002817352152098, 2.0050933393127965, 2.0059486104347357, 2.0056641178021346, 2.0044264500920814, 2.0238950613751006]
+- Sum w * dv^2 :: [79739.505162235218, 78029.42560509617, 234190.45159862508, 461670.80884922907, 977241.08205932647, 1760408.4606191032, 3663702.2040768135, 6516615.5384216616, 12094052.637317488, 21059984.585577093, 35061662.833805516, 50411244.429050684, 52659810.634471141, 15464250.245177079]
+- Unweighted B(r) :: [2.0136238677332128, 1.9903434752855875, 2.0047806088089395, 2.0064966832221978, 1.9962109579843579, 2.0052494140780306, 1.9994576380015223, 2.0016536159122151, 2.002817352152098, 2.0050933393127965, 2.0059486104347357, 2.0056641178021346, 2.0044264500920814, 2.0238950613751006]
+
+
+Test with N=100
+#+BEGIN_SRC ipython :results output verbatim
+%timeit strucfunc.strucfunc_numpy(vmap=vels, wmap=bright)
+#+END_SRC
+
+#+RESULTS:
+: 1 loop, best of 3: 30.1 s per loop
+
+Earlier test with N=30.  I don't dare run the pure python one with N=100
+#+BEGIN_SRC ipython :results output verbatim
+%timeit strucfunc.strucfunc_python(vmap=vels, wmap=bright)
+#+END_SRC
+
+#+RESULTS:
+: 1 loop, best of 3: 1.87 s per loop
+
