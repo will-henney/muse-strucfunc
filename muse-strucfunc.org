@@ -15,6 +15,8 @@
 *** Imports 
 #+BEGIN_SRC python
   import numpy as np
+  import numba
+  from concurrent import futures
 #+END_SRC
 
 
@@ -72,12 +74,88 @@
               'Unweighted B(r)': sf/nsf,
               'Weighted B(r)': wsf/weight}
 #+END_SRC
-*** Cython accelerated version
+*** Parallelizable numba accelerated version
++ We give the option to chunk on the first dimension, so that we can parcel it out among threads
++ This is a bit more complex than the example in the docs, since the result arrays don't get chunked, but are the accumulated sum of the results from each thread
+  + So we need per-thread copies of them 
+#+BEGIN_SRC python
+  def strucfunc_numba_futures(vmap, dlogr=0.15,
+                              wmap=None, wmin_factor=1e-3, numthreads=4):
+      """Calculate structure function via jitted, threaded python algorithm"""
+      ny, nx = vmap.shape
+      if wmap is None:
+          wmap = np.ones_like(vmap)
+      wmin = wmin_factor*np.nanmax(wmap)
+      maxr = np.hypot(nx, ny)
+      nr = int(np.log10(maxr)/dlogr)
+      logr = np.arange(nr)*dlogr
+
+      # arrays to hold the total accumulation sums
+      sf = np.zeros_like(logr)
+      nsf = np.zeros_like(logr).astype(int)
+      wsf = np.zeros_like(logr)
+      weight = np.zeros_like(logr)
+
+      @numba.jit(nogil=True, nopython=True)
+      def _strucfunc_chunk(j1, j2):
+          """Pure python function designed to be jitted and threaded.
+      
+          Finds partial contribution to structure function from a chunk
+          (vmap[j1:j2, :] - vmap[:, :])^2
+          """
+          # Per-thread arrays of partial accumulation sums
+          _sf = np.zeros_like(logr)
+          _nsf = np.zeros_like(logr).astype(int)
+          _wsf = np.zeros_like(logr)
+          _weight = np.zeros_like(logr)
+          # outer loop is over only those rows that are in chunk 
+          for j in range(j1, j2):
+              for i in range(nx):
+                  for jj in range(ny):
+                      for ii in range(i+1, nx):
+                          r = np.hypot(ii - i, jj - j)
+                          ir = int(np.log10(r)/dlogr)
+                          if 0 <= ir < nr:
+                              dvsq = (vmap[jj, ii] - vmap[j, i])**2
+                              if (wmap[j, i] > wmin) and (wmap[jj, ii] > wmin):
+                                  _sf[ir] += dvsq
+                                  _nsf[ir] += 1
+                              w = wmap[j, i]*wmap[jj, ii]
+                              _wsf[ir] += w*dvsq
+                              _weight[ir] += w
+          # return the partial accumulated sums for this chunk
+          return _sf, _nsf, _wsf, _weight
+
+
+      chunklen = (ny + numthreads - 1) // numthreads
+      chunklimits = [[i*chunklen, (i+1)*chunklen] for i in range(numthreads)]
+      # Spawn one thread per chunk
+      with futures.ThreadPoolExecutor(max_workers=numthreads) as ex:
+          chunks = [
+              ex.submit(_strucfunc_chunk, j1, j2)
+              for j1, j2 in chunklimits
+          ]
+          for f in futures.as_completed(chunks):
+              # As each thread finishes, add its partial result into the
+              # arrays
+              _sf, _nsf, _wsf, _weight = f.result()
+              sf += np.array(_sf)
+              nsf += np.array(_nsf)
+              wsf += np.array(_wsf)
+              weight += np.array(_weight)
+  
+      return {'log10 r': logr,
+              'Sum dv^2': sf,
+              'Sum weights': weight,
+              'Sum w * dv^2': wsf,
+              'N pairs': nsf,
+              'Unweighted B(r)': sf/nsf,
+              'Weighted B(r)': wsf/weight}
+
+#+END_SRC
 
 *** Numba accelerated version
 #+BEGIN_SRC python
-  import numba
-
   @numba.jit
   def strucfunc_numba(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
       """Calculate structure function via naive python algorithm"""
@@ -178,24 +256,24 @@ reload(strucfunc)
 : <module 'strucfunc' from '/Users/will/Dropbox/muse-strucfunc/strucfunc.py'>
 
 #+BEGIN_SRC ipython :results output
-help(strucfunc.strucfunc_python)
+help(strucfunc.strucfunc_numba_futures)
 #+END_SRC
 #+RESULTS:
-: Help on function strucfunc_python in module strucfunc:
+: Help on function strucfunc_numba_futures in module strucfunc:
 : 
-: strucfunc_python(vmap, dlogr=0.15, wmap=None, wmin_factor=0.001)
-:     Calculate structure function via naive python algorithm
+: strucfunc_numba_futures(vmap, dlogr=0.15, wmap=None, wmin_factor=0.001, numthreads=4)
+:     Calculate structure function via jitted, threaded python algorithm
 : 
 
 
 *** A function to test the structure functions
 #+BEGIN_SRC ipython :results silent
-  def test_strucfunc(n=50, func=strucfunc.strucfunc_python):
+  def test_strucfunc(n=50, func=strucfunc.strucfunc_python, **kwds):
       """Set up arrays for stucture function and run it"""
       ny, nx = n, n
       vels = np.random.normal(size=(ny, nx))
       bright = np.ones_like(vels)
-      rslt = func(vmap=vels, wmap=bright)
+      rslt = func(vmap=vels, wmap=bright, **kwds)
       return ['{} :: {}'.format(k, list(v)) for (k, v) in rslt.items()]
 #+END_SRC
 
@@ -211,11 +289,11 @@ help(strucfunc.strucfunc_python)
 #+RESULTS:
 - Sum weights :: [870.0, 1682.0, 4088.0, 8534.0, 17424.0, 30000.0, 56074.0, 83308.0, 108730.0, 75258.0]
 - N pairs :: [870, 1682, 4088, 8534, 17424, 30000, 56074, 83308, 108730, 75258]
-- Sum dv^2 :: [1828.5095097223916, 3559.2531802986391, 8389.3460201967555, 17722.109085489486, 35525.990157321634, 62511.829321928126, 116247.03538733888, 169955.0423441093, 220938.51712430117, 144693.77489312604]
+- Sum dv^2 :: [1700.9329196649489, 3265.7003732539197, 7843.398250397322, 16368.093334366311, 33421.644805214179, 57700.737517737456, 108682.06180482791, 160084.76721588499, 210023.55222174738, 144363.3986676425]
 - log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999]
-- Weighted B(r) :: [2.1017350686464273, 2.1160839359682755, 2.0521883611048817, 2.0766474203760823, 2.0389112808380183, 2.0837276440642709, 2.0731004634472106, 2.0400806926598802, 2.0319922479932049, 1.9226364624774248]
-- Sum w * dv^2 :: [1828.5095097223916, 3559.2531802986391, 8389.3460201967555, 17722.109085489486, 35525.990157321634, 62511.829321928126, 116247.03538733888, 169955.0423441093, 220938.51712430117, 144693.77489312604]
-- Unweighted B(r) :: [2.1017350686464273, 2.1160839359682755, 2.0521883611048817, 2.0766474203760823, 2.0389112808380183, 2.0837276440642709, 2.0731004634472106, 2.0400806926598802, 2.0319922479932049, 1.9226364624774248]
+- Weighted B(r) :: [1.9550953099597115, 1.9415578913519143, 1.9186394937371141, 1.9179860949573835, 1.9181384759650011, 1.9233579172579152, 1.9381899241150606, 1.9216013734081359, 1.9316062928515347, 1.9182465474453547]
+- Sum w * dv^2 :: [1700.9329196649489, 3265.7003732539197, 7843.398250397322, 16368.093334366311, 33421.644805214179, 57700.737517737456, 108682.06180482791, 160084.76721588499, 210023.55222174738, 144363.3986676425]
+- Unweighted B(r) :: [1.9550953099597115, 1.9415578913519143, 1.9186394937371141, 1.9179860949573835, 1.9181384759650011, 1.9233579172579152, 1.9381899241150606, 1.9216013734081359, 1.9316062928515347, 1.9182465474453547]
 
 
 #+BEGIN_SRC ipython :results list
@@ -239,11 +317,25 @@ help(strucfunc.strucfunc_python)
 #+RESULTS:
 - Sum weights :: [870.0, 1682.0, 4088.0, 8534.0, 17424.0, 30000.0, 56074.0, 83308.0, 108730.0, 75258.0]
 - N pairs :: [870, 1682, 4088, 8534, 17424, 30000, 56074, 83308, 108730, 75258]
-- Sum dv^2 :: [1847.2837863026311, 3364.3268177113955, 8437.1963333771509, 17488.879340525866, 36193.178707878666, 61894.854626897963, 115356.45719696926, 172336.56452902881, 220812.93073102186, 146937.95646397653]
+- Sum dv^2 :: [1646.6056813756527, 3057.8559366950753, 7642.2771005188779, 15779.975413257858, 32695.661135312512, 55939.365997984387, 105066.34560555195, 154918.83624440798, 204106.15138944288, 143374.84599533363]
 - log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999]
-- Weighted B(r) :: [2.123314696899576, 2.0001943030388798, 2.0638934279298313, 2.0493179447534411, 2.0772026347496939, 2.0631618208965987, 2.0572182686622904, 2.068667649313737, 2.0308372181644612, 1.9524563031701152]
-- Sum w * dv^2 :: [1847.2837863026311, 3364.3268177113955, 8437.1963333771509, 17488.879340525866, 36193.178707878666, 61894.854626897963, 115356.45719696926, 172336.56452902881, 220812.93073102186, 146937.95646397653]
-- Unweighted B(r) :: [2.123314696899576, 2.0001943030388798, 2.0638934279298313, 2.0493179447534411, 2.0772026347496939, 2.0631618208965987, 2.0572182686622904, 2.068667649313737, 2.0308372181644612, 1.9524563031701152]
+- Weighted B(r) :: [1.8926502084777617, 1.8179880717568819, 1.8694415607922892, 1.8490714100372461, 1.8764727465170175, 1.8646455332661462, 1.8737087706522086, 1.8595913507035096, 1.8771834028275809, 1.9051110313233626]
+- Sum w * dv^2 :: [1646.6056813756527, 3057.8559366950753, 7642.2771005188779, 15779.975413257858, 32695.661135312512, 55939.365997984387, 105066.34560555195, 154918.83624440798, 204106.15138944288, 143374.84599533363]
+- Unweighted B(r) :: [1.8926502084777617, 1.8179880717568819, 1.8694415607922892, 1.8490714100372461, 1.8764727465170175, 1.8646455332661462, 1.8737087706522086, 1.8595913507035096, 1.8771834028275809, 1.9051110313233626]
+
+
+#+BEGIN_SRC ipython :results list
+  test_strucfunc(n=200, func=strucfunc.strucfunc_numba_futures, numthreads=4)
+#+END_SRC
+
+#+RESULTS:
+- Sum weights :: [39800.0, 79202.0, 197208.0, 430644.0, 931174.0, 1759750.0, 3756974.0, 7014208.0, 13618460.0, 25526822.0, 47669822.0, 84088020.0, 138263880.0, 199521906.0, 210520624.0, 62229760.0]
+- N pairs :: [39800, 79202, 197208, 430644, 931174, 1759750, 3756974, 7014208, 13618460, 25526822, 47669822, 84088020, 138263880, 199521906, 210520624, 62229760]
+- Sum dv^2 :: [80746.246208830707, 160207.33397941853, 398121.28210852726, 870097.46704598656, 1881489.7004723339, 3553611.7637799149, 7592726.2858823305, 14177603.974767853, 27514457.260117393, 51558930.114471808, 96282055.842661157, 169775744.98672557, 278935819.39568895, 402864791.36889988, 425978361.19574881, 126101911.59604037]
+- log10 r :: [0.0, 0.14999999999999999, 0.29999999999999999, 0.44999999999999996, 0.59999999999999998, 0.75, 0.89999999999999991, 1.05, 1.2, 1.3499999999999999, 1.5, 1.6499999999999999, 1.7999999999999998, 1.95, 2.1000000000000001, 2.25]
+- Weighted B(r) :: [2.0288001560007713, 2.0227687934574701, 2.0187887008058865, 2.0204564954950879, 2.0205565237778695, 2.0193844374370875, 2.0209685469961545, 2.0212693970249886, 2.0203794893194527, 2.0197943212230576, 2.0197695691555375, 2.0190241723699236, 2.0174164025751984, 2.0191506759608635, 2.0234519217259628, 2.0263923819735181]
+- Sum w * dv^2 :: [80746.246208830707, 160207.33397941853, 398121.28210852726, 870097.46704598656, 1881489.7004723339, 3553611.7637799149, 7592726.2858823305, 14177603.974767853, 27514457.260117393, 51558930.114471808, 96282055.842661157, 169775744.98672557, 278935819.39568895, 402864791.36889988, 425978361.19574881, 126101911.59604037]
+- Unweighted B(r) :: [2.0288001560007713, 2.0227687934574701, 2.0187887008058865, 2.0204564954950879, 2.0205565237778695, 2.0193844374370875, 2.0209685469961545, 2.0212693970249886, 2.0203794893194527, 2.0197943212230576, 2.0197695691555375, 2.0190241723699236, 2.0174164025751984, 2.0191506759608635, 2.0234519217259628, 2.0263923819735181]
 
 
 #+BEGIN_SRC ipython :results list
@@ -296,6 +388,31 @@ Wow, that was fast!
 #+RESULTS:
 : 1 loop, best of 3: 1.33 s per loop
 
+**** N=200 - numba multithreading with 4 threads
+#+BEGIN_SRC ipython :results output verbatim
+%timeit test_strucfunc(n=200, func=strucfunc.strucfunc_numba_futures)
+#+END_SRC
+
+#+RESULTS:
+: 1 loop, best of 3: 5.76 s per loop
+
+**** N=200 - numba multithreading with 8 threads
+#+BEGIN_SRC ipython :results output verbatim
+%timeit test_strucfunc(n=200, func=strucfunc.strucfunc_numba_futures, numthreads=8)
+#+END_SRC
+
+#+RESULTS:
+: 1 loop, best of 3: 4.49 s per loop
+
+
+**** N=200 - numba multithreading with 50 threads
+#+BEGIN_SRC ipython :results output verbatim
+%timeit test_strucfunc(n=200, func=strucfunc.strucfunc_numba_futures, numthreads=50)
+#+END_SRC
+
+#+RESULTS:
+: 1 loop, best of 3: 4.59 s per loop
+
 **** N=200 - numba acceleration
 #+BEGIN_SRC ipython :results output verbatim
 %timeit test_strucfunc(n=200, func=strucfunc.strucfunc_numba)
@@ -303,6 +420,16 @@ Wow, that was fast!
 
 #+RESULTS:
 : 1 loop, best of 3: 21.9 s per loop
+
+
+**** N=400 - numba multithreading with 8 threads
+#+BEGIN_SRC ipython :results output verbatim
+%timeit test_strucfunc(n=400, func=strucfunc.strucfunc_numba_futures, numthreads=8)
+#+END_SRC
+
+#+RESULTS:
+: 1 loop, best of 3: 1min 20s per loop
+
 
 **** N=100 - numpy histogram
 #+BEGIN_SRC ipython :results output verbatim
@@ -317,16 +444,28 @@ Wow, that was fast!
   + Timings are consistent with N^4 trend
   + Extrapolation to N=1500 would give t = 18.7 hrs
   + So we need to further increase the efficiency
-    + [ ] Maybe with nogil=True and parallelism
+    + [X] Maybe with nogil=True and parallelism
     + [ ] Or vectorize inner loops with Accelerate?
+  + Multithreading with =concurrent.futures= works great
+    + Speed-up is nearly a factor of 5 with 8 threads
+      + Which is similar to what I get with openMP+Fortran
+  + Extrapolation to 1600x1600 now gives t = 80 * 40**4 / 3600 = 5.7 hours
+    + May be even faster on the iMac
 
-|   N | Python | Numpy | Numba |
-|-----+--------+-------+-------|
-|  50 |   14.8 |  2.47 | 0.085 |
-| 100 |        |    30 |  1.33 |
-| 200 |        |       | 21.29 |
+|   N | Python | Numpy | Numba | 2 Threads | 4 Threads | 8 Threads | 50 Threads |
+|-----+--------+-------+-------+-----------+-----------+-----------+------------|
+|  50 |   14.8 |  2.47 | 0.085 |           |           |           |            |
+| 100 |        |    30 |  1.33 |           |           |           |            |
+| 200 |        |       | 21.29 |           |      5.76 |      4.49 |       4.59 |
+| 400 |        |       |       |           |           |        80 |            |
 
-** Inspect what numba was doing behind the scenes
+*** Inspect what numba was doing behind the scenes
+#+BEGIN_SRC ipython :results output verbatim
+strucfunc.strucfunc_numba_futures.inspect_types()
+#+END_SRC
+
+
+
 #+BEGIN_SRC ipython :results output verbatim
 strucfunc.strucfunc_numba.inspect_types()
 #+END_SRC
@@ -1084,8 +1223,9 @@ def strucfunc_numba(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
 + The easiest way would seem to be just using threads with GIL released
 + In the numba docs example this is done with =threading.Thread=
 + But it might be better to use =concurrent.futures=
-  + [ ] First task is to re-write =make_multithread= to use the =concurrent.futures= API
+  + [X] First task is to re-write =make_multithread= to use the =concurrent.futures= API
   + [ ] Second task will be to adapt this for my own strucfunc function
+    + We need to restructure the function a bit first
 
 
 * Multi-threading example from numba docs
