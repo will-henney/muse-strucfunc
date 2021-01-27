@@ -20,7 +20,6 @@
 #+BEGIN_SRC python
   import numpy as np
   import numba
-  from concurrent import futures
 #+END_SRC
 
 
@@ -78,11 +77,122 @@
               'Unweighted B(r)': sf/nsf,
               'Weighted B(r)': wsf/weight}
 #+END_SRC
+
+
+*** New auto-parallelizable numba version
++ [2021-01-26 Tue] Return to this project
++ This one is simple because we are just going to parallelize on the outer loop
++ The only difference over the single-threaded version is that we make 2D arrays to store partial sums as a function of j, then add them all up at the end
++ This allows us to use ~numba.prange~ on the j-loop
++ The result is ~_strucfunc_numba_parallel()~
++ I tried another, arguably even simpler approach in ~_strucfunc_numba_prange()~, but it doesn't work - the jit compiler crashes
+#+BEGIN_SRC python
+  def strucfunc_numba_parallel(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
+      """Calculate structure function via naive python algorithm"""
+      ny, nx = vmap.shape
+      if wmap is None:
+          wmap = np.ones((ny, nx))
+      wmin = wmin_factor*np.nanmax(wmap)
+      maxr = np.hypot(nx, ny)
+      nr = int(np.log10(maxr)/dlogr)
+      logr = np.arange(nr)*dlogr
+      sf = np.zeros((nr,))
+      nsf = np.zeros((nr,), dtype=np.int64)
+      wsf = np.zeros((nr,))
+      weight = np.zeros((nr,))
+      sf, weight, wsf, nsf = _strucfunc_numba_parallel(
+          ny, nx, nr,
+          vmap, wmap,
+          wmin, dlogr, maxr,
+          sf, weight, wsf, nsf
+      )
+      return {'log10 r': logr,
+              'Sum dv^2': sf,
+              'Sum weights': weight,
+              'Sum w * dv^2': wsf,
+              'N pairs': nsf,
+              'Unweighted B(r)': sf/nsf,
+              'Weighted B(r)': wsf/weight}
+
+
+  @numba.jit(nopython=True, parallel=True)
+  def _strucfunc_numba_prange(
+          ny, nx, nr,
+          vmap, wmap,
+          wmin, dlogr, maxr,
+          sf, weight, wsf, nsf
+  ):
+      # THIS ONE DOES NOT WORK !!!!!!
+      # Parallel loop on the outer axis
+      for j in numba.prange(ny):
+          # make per-thread containers to hold partial sums
+          _sf = np.zeros(nr)
+          _weight = np.zeros(nr)
+          _wsf = np.zeros(nr)
+          _nsf = np.zeros(nr, dtype=np.int64)
+          for i in range(nx):
+              for jj in range(ny):
+                  for ii in range(i+1, nx):
+                      r = np.hypot(ii - i, jj - j)
+                      ir = int(np.log10(r)/dlogr)
+                      if 0 <= ir < nr:
+                          dvsq = (vmap[jj, ii] - vmap[j, i])**2
+                          if (wmap[j, i] > wmin) and (wmap[jj, ii] > wmin):
+                              _sf[ir] += dvsq
+                              _nsf[ir] += 1
+                          w = wmap[j, i]*wmap[jj, ii]
+                          _wsf[ir] += w*dvsq
+                          _weight[ir] += w
+          # Now add the partial sums into the global sums
+          sf += _sf
+          weight += _weight
+          wsf += _wsf
+          nsf += _nsf
+      return sf, weight, wsf, nsf
+
+
+  @numba.jit(nopython=True, parallel=True)
+  def _strucfunc_numba_parallel(
+          ny, nx, nr,
+          vmap, wmap,
+          wmin, dlogr, maxr,
+          sf, weight, wsf, nsf
+  ):
+      # Use per-j containers to hold partial results 
+      _sf = np.zeros((ny, nr))
+      _weight = np.zeros((ny, nr))
+      _wsf = np.zeros((ny, nr))
+      _nsf = np.zeros((ny, nr), dtype=np.int64)
+      for j in numba.prange(ny):
+          for i in range(nx):
+              for jj in range(ny):
+                  for ii in range(i+1, nx):
+                      r = np.hypot(ii - i, jj - j)
+                      ir = int(np.log10(r)/dlogr)
+                      if 0 <= ir < nr:
+                          dvsq = (vmap[jj, ii] - vmap[j, i])**2
+                          if (wmap[j, i] > wmin) and (wmap[jj, ii] > wmin):
+                              _sf[j, ir] += dvsq
+                              _nsf[j, ir] += 1
+                          w = wmap[j, i]*wmap[jj, ii]
+                          _wsf[j, ir] += w*dvsq
+                          _weight[j, ir] += w
+      sf = np.sum(_sf, axis=0)
+      weight = np.sum(_weight, axis=0)
+      wsf = np.sum(_wsf, axis=0)
+      nsf = np.sum(_nsf, axis=0)
+      return sf, weight, wsf, nsf
+#+END_SRC
+
 *** Parallelizable numba accelerated version
++ [2021-01-26 Tue] *OLD VERSION THAT NO LONGER WORKS*
+  + Now removed from tangled file
 + We give the option to chunk on the first dimension, so that we can parcel it out among threads
 + This is a bit more complex than the example in the docs, since the result arrays don't get chunked, but are the accumulated sum of the results from each thread
   + So we need per-thread copies of them 
-#+BEGIN_SRC python
+#+BEGIN_SRC python :tangle no
+  from concurrent import futures
+
   def strucfunc_numba_futures(vmap, dlogr=0.15,
                               wmap=None, wmin_factor=1e-3, numthreads=4):
       """Calculate structure function via jitted, threaded python algorithm"""
@@ -168,21 +278,40 @@
 
 *** Numba accelerated version
 #+BEGIN_SRC python
-  @numba.jit
   def strucfunc_numba(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
       """Calculate structure function via naive python algorithm"""
       ny, nx = vmap.shape
       if wmap is None:
-          wmap = np.ones_like(vmap)
+          wmap = np.ones((ny, nx))
       wmin = wmin_factor*np.nanmax(wmap)
       maxr = np.hypot(nx, ny)
       nr = int(np.log10(maxr)/dlogr)
       logr = np.arange(nr)*dlogr
-      sf = np.zeros_like(logr)
-      nsf = np.zeros_like(logr).astype(int)
-      wsf = np.zeros_like(logr)
-      weight = np.zeros_like(logr)
+      sf = np.zeros((nr,))
+      nsf = np.zeros((nr,), dtype=np.int64)
+      wsf = np.zeros((nr,))
+      weight = np.zeros((nr,))
+      sf, weight, wsf, nsf = _strucfunc_numba(
+          ny, nx, nr,
+          vmap, wmap,
+          wmin, dlogr, maxr,
+          sf, weight, wsf, nsf
+      )
+      return {'log10 r': logr,
+              'Sum dv^2': sf,
+              'Sum weights': weight,
+              'Sum w * dv^2': wsf,
+              'N pairs': nsf,
+              'Unweighted B(r)': sf/nsf,
+              'Weighted B(r)': wsf/weight}
 
+  @numba.jit(nopython=True)
+  def _strucfunc_numba(
+          ny, nx, nr,
+          vmap, wmap,
+          wmin, dlogr, maxr,
+          sf, weight, wsf, nsf
+  ):
       for j in range(ny):
           for i in range(nx):
               for jj in range(ny):
@@ -197,15 +326,7 @@
                           w = wmap[j, i]*wmap[jj, ii]
                           wsf[ir] += w*dvsq
                           weight[ir] += w
-                  
-      return {'log10 r': logr,
-              'Sum dv^2': sf,
-              'Sum weights': weight,
-              'Sum w * dv^2': wsf,
-              'N pairs': nsf,
-              'Unweighted B(r)': sf/nsf,
-              'Weighted B(r)': wsf/weight}
-
+      return sf, weight, wsf, nsf
 #+END_SRC
 *** Naive python function
 
@@ -264,8 +385,52 @@
 + [2021-01-15 Fri] Time to see if this machinery still works
 + Re-write the tests in normal python blocks instead of ipython
   + I moved the ~test_strucfunc()~ function to the ~strucfunc.py~ library
++ Use the numba single-threaded version
 
 
+
+  
+*** Speed tests on gris (2019 MBP laptop)
+#+begin_src ipython :results output verbatim
+  import numpy as np
+  import strucfunc
+
+  funcs = [
+      strucfunc.strucfunc_numpy,
+      strucfunc.strucfunc_numba,
+      strucfunc.strucfunc_numba_parallel
+  ]
+
+  for func in funcs:
+      %timeit -r 3 strucfunc.test_strucfunc(n=50, func=func)
+#+end_src
+
+#+RESULTS:
+: 1.76 s ± 42.8 ms per loop (mean ± std. dev. of 3 runs, 1 loop each)
+: 56.9 ms ± 3.02 ms per loop (mean ± std. dev. of 3 runs, 1 loop each)
+: 10 ms ± 552 µs per loop (mean ± std. dev. of 3 runs, 1 loop each)
+
+#+begin_src ipython :results output verbatim
+  for func in funcs:
+      %timeit -r 3 strucfunc.test_strucfunc(n=100, func=func)
+#+end_src
+
+#+RESULTS:
+: 24.4 s ± 248 ms per loop (mean ± std. dev. of 3 runs, 1 loop each)
+: 862 ms ± 3.56 ms per loop (mean ± std. dev. of 3 runs, 1 loop each)
+: 126 ms ± 9.91 ms per loop (mean ± std. dev. of 3 runs, 10 loops each)
+
+|   N | Numpy | Numba | Parallel  N=8 |
+|-----+-------+-------+---------------|
+|  50 |  1.76 | 0.057 |         0.010 |
+| 100 |  24.4 | 0.862 |         0.126 |
+| 200 |       |  14.9 |          1.75 |
+| 400 |       |       |          27.2 |
+
+Conclusions:
++ We are 25% faster than hypatia for numba single-threaded
++ We are *twice as fast* than hypatia for numba multi-threaded
+  
 *** Smoke test
 #+begin_src python :results list :return data
   import numpy as np
@@ -309,25 +474,12 @@ That seems fine with numpy
 
 #+RESULTS:
 - log10 r[0.0, 0.15, 0.3, 0.44999999999999996, 0.6, 0.75, 0.8999999999999999, 1.05, 1.2, 1.3499999999999999]
-- Sum dv^2[1673.380338975774, 3233.9325941228594, 7822.4197644460355, 16359.444726662106, 33307.47430654223, 57769.57986268901, 107955.11024014972, 158990.43488170774, 209518.02694225346, 141960.84033487408]
+- Sum dv^2[1769.9861165442956, 3297.9607343152943, 8099.953772341007, 16949.88368572312, 34320.48803173328, 59479.55593832436, 111727.46611738572, 166339.25380655914, 216754.04827395306, 149937.7707534742]
 - Sum weights[870.0, 1682.0, 4088.0, 8534.0, 17424.0, 30000.0, 56074.0, 83308.0, 108730.0, 75258.0]
-- Sum w * dv^2[1673.380338975774, 3233.9325941228594, 7822.4197644460355, 16359.444726662106, 33307.47430654223, 57769.57986268901, 107955.11024014972, 158990.43488170774, 209518.02694225346, 141960.84033487408]
+- Sum w * dv^2[1769.9861165442956, 3297.9607343152943, 8099.953772341007, 16949.88368572312, 34320.48803173328, 59479.55593832436, 111727.46611738572, 166339.25380655914, 216754.04827395306, 149937.7707534742]
 - N pairs[870, 1682, 4088, 8534, 17424, 30000, 56074, 83308, 108730, 75258]
-- Unweighted B(r)[1.9234256769836484, 1.9226709834261946, 1.913507770167817, 1.91697266541623, 1.9115859909631674, 1.9256526620896337, 1.925225777368294, 1.908465392059679, 1.9269569294790165, 1.8863222559046757]
-- Weighted B(r)[1.9234256769836484, 1.9226709834261946, 1.913507770167817, 1.91697266541623, 1.9115859909631674, 1.9256526620896337, 1.925225777368294, 1.908465392059679, 1.9269569294790165, 1.8863222559046757]
-
-  Fine with numba
-
-  #+begin_src python :results list :return data
-    import numpy as np
-    import strucfunc
-    data = strucfunc.test_strucfunc(
-        n=30,
-        func=strucfunc.strucfunc_numba_futures,
-        numthreads=1,
-        wmin_factor=-1e30,
-    )
-#+end_src
+- Unweighted B(r)[2.0344668006256272, 1.9607376541708053, 1.9813976938211857, 1.9861593257233563, 1.9697249788643985, 1.982651864610812, 1.9925003765985254, 1.9966780358015934, 1.9935072958148905, 1.9923167072400836]
+- Weighted B(r)[2.0344668006256272, 1.9607376541708053, 1.9813976938211857, 1.9861593257233563, 1.9697249788643985, 1.982651864610812, 1.9925003765985254, 1.9966780358015934, 1.9935072958148905, 1.9923167072400836]
 
 #+RESULTS:
 - log10 r[0.0, 0.15, 0.3, 0.44999999999999996, 0.6, 0.75, 0.8999999999999999, 1.05, 1.2, 1.3499999999999999]
@@ -337,6 +489,13 @@ That seems fine with numpy
 - N pairs[870, 1711, 4174, 8842, 18357, 32565, 63462, 101512, 153472, 173440]
 - Unweighted B(r)[2.1719524668729115, 2.1368047782955117, 2.0463427665219314, 2.096886073511504, 2.0620892394524946, 2.04042475677347, 2.019991961321413, 1.9977809729420604, 2.0055385298864707, inf]
 - Weighted B(r)[2.1719524668729115, 2.1368047782955117, 2.0463427665219314, 2.096886073511504, 2.0620892394524946, 2.04042475677347, 2.0194724414619674, 1.996129800844819, 2.001383920132378, inf]
+
+Not fine with parallel, but never mind
+
+**** Previous parallel results - all bad :(
+:PROPERTIES:
+:VISIBILITY: folded
+:END:
 
 #+RESULTS:
 - log10 r[0.0, 0.15, 0.3, 0.44999999999999996, 0.6, 0.75, 0.8999999999999999, 1.05, 1.2, 1.3499999999999999]
