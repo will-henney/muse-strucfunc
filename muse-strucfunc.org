@@ -88,7 +88,7 @@
 + I tried another, arguably even simpler approach in ~_strucfunc_numba_prange()~, but it doesn't work - the jit compiler crashes
 #+BEGIN_SRC python
   def strucfunc_numba_parallel(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
-      """Calculate structure function via naive python algorithm"""
+      """Calculate structure function via multithreaded numba algorithm"""
       ny, nx = vmap.shape
       if wmap is None:
           wmap = np.ones((ny, nx))
@@ -380,6 +380,146 @@
       return ['{} :: {}'.format(k, list(v)) for (k, v) in rslt.items()]
 #+END_SRC
 
+
+** New 2026 tests of the structure function routines
+:LOGBOOK:
+- Note taken on [2026-04-26 Sun 21:32] \\
+  I want to see how fast this is on modern hardware and see if we can improve it with jax
+:END:
+
+|   N | Numpy |  Numba | Parallel  N=16 |
+|-----+-------+--------+----------------|
+|  50 | 0.659 | 0.0176 |         0.0024 |
+| 100 |  12.9 |  0.284 |         0.0274 |
+| 200 |       |        |          0.397 |
+| 400 |       |        |           6.52 |
+
+- It seems that ~misiti~ is about 3 times faster than ~gris~ on single-threaded benchmarks
+- And 4.5 times faster on multi-threaded benchmarks!
+
+*** Speed tests on misitu (2024 M4 Max Macbook Pro, 128 GB)
+#+begin_src ipython :eval no :tangle strucfunc-benchmark.ipy
+  import sys
+  import numpy as np
+  import strucfunc
+
+  funcs = [
+      strucfunc.strucfunc_numpy,
+      strucfunc.strucfunc_numba,
+      strucfunc.strucfunc_numba_parallel
+  ]
+
+  try:
+      n = int(sys.argv[1])
+  except IndexError:
+      print(f"Usage: {sys.argv[0]} N [IFIRST]")
+
+  try:
+      ifirst = int(sys.argv[2])
+  except IndexError:
+      ifirst = 0
+
+  print(f"Benchmarking strucfunc with N = {n}")
+  for func in funcs[ifirst:]:
+      print(f"{func}")
+      %timeit -r 3 strucfunc.test_strucfunc(n=n, func=func)
+#+end_src
+
+#+begin_src sh :results output verbatim
+  uv run ipython strucfunc-benchmark.ipy 50
+#+end_src
+
+#+RESULTS:
+: Benchmarking strucfunc with N = 50
+: <function strucfunc_numpy at 0x108090460>
+: 659 ms ± 1.32 ms per loop (mean ± std. dev. of 3 runs, 1 loop each)
+: <function strucfunc_numba at 0x109119640>
+: 17.6 ms ± 49.8 μs per loop (mean ± std. dev. of 3 runs, 100 loops each)
+: <function strucfunc_numba_parallel at 0x1080905c0>
+: 2.36 ms ± 139 μs per loop (mean ± std. dev. of 3 runs, 1 loop each)
+
+#+begin_src sh :results output verbatim
+  uv run ipython strucfunc-benchmark.ipy 100
+#+end_src
+
+#+RESULTS:
+: Benchmarking strucfunc with N = 100
+: <function strucfunc_numpy at 0x10594c460>
+: 12.9 s ± 39.2 ms per loop (mean ± std. dev. of 3 runs, 1 loop each)
+: <function strucfunc_numba at 0x106975640>
+: 284 ms ± 325 μs per loop (mean ± std. dev. of 3 runs, 1 loop each)
+: <function strucfunc_numba_parallel at 0x10594c5c0>
+: 27.4 ms ± 676 μs per loop (mean ± std. dev. of 3 runs, 1 loop each)
+
+
+#+begin_src sh :results output verbatim
+  uv run ipython strucfunc-benchmark.ipy 200 2
+#+end_src
+
+#+RESULTS:
+: Benchmarking strucfunc with N = 200
+: <function strucfunc_numba_parallel at 0x10736c5c0>
+: 397 ms ± 7.96 ms per loop (mean ± std. dev. of 3 runs, 1 loop each)
+
+#+begin_src sh :results output verbatim
+  uv run ipython strucfunc-benchmark.ipy 400 2
+#+end_src
+
+#+RESULTS:
+: Benchmarking strucfunc with N = 400
+: <function strucfunc_numba_parallel at 0x105a205c0>
+: 6.52 s ± 245 ms per loop (mean ± std. dev. of 3 runs, 1 loop each)
+
+*** Correctness tests
+
+**** Parallel numba version
+#+begin_src python :results list :return data
+  import numpy as np
+  import strucfunc
+  data = strucfunc.test_strucfunc(n=400, func=strucfunc.strucfunc_numba_parallel)
+#+end_src
+
+#+RESULTS:
+- log10 r :: [np.float64(0.0), np.float64(0.15), np.float64(0.3), np.float64(0.44999999999999996), np.float64(0.6), np.float64(0.75), np.float64(0.8999999999999999), np.float64(1.05), np.float64(1.2), np.float64(1.3499999999999999), np.float64(1.5), np.float64(1.65), np.float64(1.7999999999999998), np.float64(1.95), np.float64(2.1), np.float64(2.25), np.float64(2.4), np.float64(2.55)]
+- Sum dv^2 :: [np.float64(317822.6314818846), np.float64(636631.1903731101), np.float64(1587170.2328778077), np.float64(3481431.109955284), np.float64(7572608.438053828), np.float64(14408405.225522785), np.float64(31025853.63726554), np.float64(58770978.696470916), np.float64(116272493.12191437), np.float64(224386114.98592877), np.float64(438039249.11505073), np.float64(827218747.5819755), np.float64(1521074214.9994092), np.float64(2683743666.443039), np.float64(4431512432.0046835), np.float64(6396488524.867642), np.float64(6742899857.471393), np.float64(2028478809.1487453)]
+- Sum weights :: [np.float64(159600.0), np.float64(318402.0), np.float64(794408.0), np.float64(1741244.0), np.float64(3782174.0), np.float64(7198750.0), np.float64(15510974.0), np.float64(29376208.0), np.float64(58150260.0), np.float64(112228622.0), np.float64(218991822.0), np.float64(413604420.0), np.float64(760402080.0), np.float64(1341180706.0), np.float64(2213209024.0), np.float64(3196334092.0), np.float64(3374689768.0), np.float64(1014219936.0)]
+- Sum w * dv^2 :: [np.float64(317822.6314818846), np.float64(636631.1903731101), np.float64(1587170.2328778077), np.float64(3481431.109955284), np.float64(7572608.438053828), np.float64(14408405.225522785), np.float64(31025853.63726554), np.float64(58770978.696470916), np.float64(116272493.12191437), np.float64(224386114.98592877), np.float64(438039249.11505073), np.float64(827218747.5819755), np.float64(1521074214.9994092), np.float64(2683743666.443039), np.float64(4431512432.0046835), np.float64(6396488524.867642), np.float64(6742899857.471393), np.float64(2028478809.1487453)]
+- N pairs :: [np.int64(159600), np.int64(318402), np.int64(794408), np.int64(1741244), np.int64(3782174), np.int64(7198750), np.int64(15510974), np.int64(29376208), np.int64(58150260), np.int64(112228622), np.int64(218991822), np.int64(413604420), np.int64(760402080), np.int64(1341180706), np.int64(2213209024), np.int64(3196334092), np.int64(3374689768), np.int64(1014219936)]
+- Unweighted B(r) :: [np.float64(1.9913698714403796), np.float64(1.9994572596061273), np.float64(1.9979283099840481), np.float64(1.9993930258799364), np.float64(2.0021840449576955), np.float64(2.001514877655535), np.float64(2.000251798324563), np.float64(2.0006318955962907), np.float64(1.9995180266075228), np.float64(1.999366213245751), np.float64(2.000253914116714), np.float64(2.000023954245884), np.float64(2.000355147633748), np.float64(2.0010306250580965), np.float64(2.002301808798645), np.float64(2.001195225767295), np.float64(1.9980799187557772), np.float64(2.000038391227941)]
+- Weighted B(r) :: [np.float64(1.9913698714403796), np.float64(1.9994572596061273), np.float64(1.9979283099840481), np.float64(1.9993930258799364), np.float64(2.0021840449576955), np.float64(2.001514877655535), np.float64(2.000251798324563), np.float64(2.0006318955962907), np.float64(1.9995180266075228), np.float64(1.999366213245751), np.float64(2.000253914116714), np.float64(2.000023954245884), np.float64(2.000355147633748), np.float64(2.0010306250580965), np.float64(2.002301808798645), np.float64(2.001195225767295), np.float64(1.9980799187557772), np.float64(2.000038391227941)]
+
+
+**** Numba version
+#+begin_src python :results list :return data
+  import numpy as np
+  import strucfunc
+  data = strucfunc.test_strucfunc(n=100, func=strucfunc.strucfunc_numba)
+#+end_src
+
+#+RESULTS:
+- log10 r :: [np.float64(0.0), np.float64(0.15), np.float64(0.3), np.float64(0.44999999999999996), np.float64(0.6), np.float64(0.75), np.float64(0.8999999999999999), np.float64(1.05), np.float64(1.2), np.float64(1.3499999999999999), np.float64(1.5), np.float64(1.65), np.float64(1.7999999999999998), np.float64(1.95)]
+- Sum dv^2 :: [np.float64(19310.543553794007), np.float64(38942.09118591064), np.float64(95374.70876221816), np.float64(207444.60232453086), np.float64(442484.1446807401), np.float64(827248.220545556), np.float64(1733313.3289631954), np.float64(3123297.7343443865), np.float64(5809598.934945786), np.float64(10178398.067286773), np.float64(17065568.22676915), np.float64(24513824.318893038), np.float64(25582104.33051917), np.float64(7504482.666999194)]
+- Sum weights :: [np.float64(9900.0), np.float64(19602.0), np.float64(48608.0), np.float64(105344.0), np.float64(225674.0), np.float64(420250.0), np.float64(879974.0), np.float64(1593208.0), np.float64(2962560.0), np.float64(5185922.0), np.float64(8658822.0), np.float64(12479820.0), np.float64(13074780.0), np.float64(3814918.0)]
+- Sum w * dv^2 :: [np.float64(19310.543553794007), np.float64(38942.09118591064), np.float64(95374.70876221816), np.float64(207444.60232453086), np.float64(442484.1446807401), np.float64(827248.220545556), np.float64(1733313.3289631954), np.float64(3123297.7343443865), np.float64(5809598.934945786), np.float64(10178398.067286773), np.float64(17065568.22676915), np.float64(24513824.318893038), np.float64(25582104.33051917), np.float64(7504482.666999194)]
+- N pairs :: [np.int64(9900), np.int64(19602), np.int64(48608), np.int64(105344), np.int64(225674), np.int64(420250), np.int64(879974), np.int64(1593208), np.int64(2962560), np.int64(5185922), np.int64(8658822), np.int64(12479820), np.int64(13074780), np.int64(3814918)]
+- Unweighted B(r) :: [np.float64(1.9505599549286876), np.float64(1.9866386688047466), np.float64(1.96211958447618), np.float64(1.969211367752609), np.float64(1.9607227446703657), np.float64(1.9684669138502227), np.float64(1.969732434098275), np.float64(1.9603829094157113), np.float64(1.9610063374060902), np.float64(1.962697870752158), np.float64(1.9708879830038253), np.float64(1.9642770744203872), np.float64(1.9565992185351624), np.float64(1.9671412772172807)]
+- Weighted B(r) :: [np.float64(1.9505599549286876), np.float64(1.9866386688047466), np.float64(1.96211958447618), np.float64(1.969211367752609), np.float64(1.9607227446703657), np.float64(1.9684669138502227), np.float64(1.969732434098275), np.float64(1.9603829094157113), np.float64(1.9610063374060902), np.float64(1.962697870752158), np.float64(1.9708879830038253), np.float64(1.9642770744203872), np.float64(1.9565992185351624), np.float64(1.9671412772172807)]
+
+**** Numpy version
+#+begin_src python :results list :return data
+  import numpy as np
+  import strucfunc
+  data = strucfunc.test_strucfunc(n=100, func=strucfunc.strucfunc_numpy)
+#+end_src
+
+#+RESULTS:
+- log10 r :: [np.float64(0.0), np.float64(0.15), np.float64(0.3), np.float64(0.44999999999999996), np.float64(0.6), np.float64(0.75), np.float64(0.8999999999999999), np.float64(1.05), np.float64(1.2), np.float64(1.3499999999999999), np.float64(1.5), np.float64(1.65), np.float64(1.7999999999999998), np.float64(1.95)]
+- Sum dv^2 :: [np.float64(79248.17340067853), np.float64(77978.48939894281), np.float64(235417.95475872865), np.float64(462854.1778065464), np.float64(984475.0396918684), np.float64(1765075.1004199495), np.float64(3693300.2796073635), np.float64(6550875.483111923), np.float64(12177403.02927499), np.float64(21203135.069519296), np.float64(35204759.27624637), np.float64(50685183.576817565), np.float64(52915301.903953336), np.float64(15449095.52345963)]
+- Sum weights :: [np.float64(39600.0), np.float64(39204.0), np.float64(116816.0), np.float64(230088.0), np.float64(489548.0), np.float64(877900.0), np.float64(1832348.0), np.float64(3255616.0), np.float64(6038520.0), np.float64(10503244.0), np.float64(17478844.0), np.float64(25134440.0), np.float64(26271760.0), np.float64(7640836.0)]
+- Sum w * dv^2 :: [np.float64(79248.17340067853), np.float64(77978.48939894281), np.float64(235417.95475872865), np.float64(462854.1778065464), np.float64(984475.0396918684), np.float64(1765075.1004199495), np.float64(3693300.2796073635), np.float64(6550875.483111923), np.float64(12177403.02927499), np.float64(21203135.069519296), np.float64(35204759.27624637), np.float64(50685183.576817565), np.float64(52915301.903953336), np.float64(15449095.52345963)]
+- N pairs :: [np.int64(39600), np.int64(39204), np.int64(116816), np.int64(230088), np.int64(489548), np.int64(877900), np.int64(1832348), np.int64(3255616), np.int64(6038520), np.int64(10503244), np.int64(17478844), np.int64(25134440), np.int64(26271760), np.int64(7640836)]
+- Unweighted B(r) :: [np.float64(2.0012165000171347), np.float64(1.9890442148490666), np.float64(2.015288614220044), np.float64(2.011639797844939), np.float64(2.010987767679305), np.float64(2.010565099008941), np.float64(2.015610724386068), np.float64(2.0121769530288347), np.float64(2.0166204681403705), np.float64(2.0187225079717557), np.float64(2.0141354471866886), np.float64(2.01656307348871), np.float64(2.0141513893227305), np.float64(2.021911676086181)]
+- Weighted B(r) :: [np.float64(2.0012165000171347), np.float64(1.9890442148490666), np.float64(2.015288614220044), np.float64(2.011639797844939), np.float64(2.010987767679305), np.float64(2.010565099008941), np.float64(2.015610724386068), np.float64(2.0121769530288347), np.float64(2.0166204681403705), np.float64(2.0187225079717557), np.float64(2.0141354471866886), np.float64(2.01656307348871), np.float64(2.0141513893227305), np.float64(2.021911676086181)]
 
 ** New 2021 tests of the structure function routines
 + [2021-01-15 Fri] Time to see if this machinery still works

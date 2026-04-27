@@ -1,6 +1,5 @@
 import numpy as np
 import numba
-from concurrent import futures
 
 def strucfunc_numpy(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
     """Calculate structure function by numpy.histogram"""
@@ -55,7 +54,7 @@ def strucfunc_numpy(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
             'Weighted B(r)': wsf/weight}
 
 def strucfunc_numba_parallel(vmap, dlogr=0.15, wmap=None, wmin_factor=1e-3):
-    """Calculate structure function via naive python algorithm"""
+    """Calculate structure function via multithreaded numba algorithm"""
     ny, nx = vmap.shape
     if wmap is None:
         wmap = np.ones((ny, nx))

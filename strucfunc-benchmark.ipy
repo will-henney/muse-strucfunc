@@ -1,0 +1,24 @@
+import sys
+import numpy as np
+import strucfunc
+
+funcs = [
+    strucfunc.strucfunc_numpy,
+    strucfunc.strucfunc_numba,
+    strucfunc.strucfunc_numba_parallel
+]
+
+try:
+    n = int(sys.argv[1])
+except IndexError:
+    print(f"Usage: {sys.argv[0]} N [IFIRST]")
+
+try:
+    ifirst = int(sys.argv[2])
+except IndexError:
+    ifirst = 0
+
+print(f"Benchmarking strucfunc with N = {n}")
+for func in funcs[ifirst:]:
+    print(f"{func}")
+    %timeit -r 3 strucfunc.test_strucfunc(n=n, func=func)
